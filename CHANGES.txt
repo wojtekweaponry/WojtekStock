@@ -1,0 +1,1 @@
+v8: on GitHub (deploy.sh, .gitignore, GITHUB.md, run-tests.sh, as with the Locator); refuses to start without STOCK_PASSWORD; the station finds a product by the last 3 to 6 characters of its barcode or SKU

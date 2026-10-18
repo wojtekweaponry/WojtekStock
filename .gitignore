@@ -1,0 +1,11 @@
+# Never in git: settings with keys and passwords, and data
+stock.env
+*.env
+!*.env.example
+data/
+*.db
+*.db-*
+*.bak
+__pycache__/
+*.pyc
+.DS_Store

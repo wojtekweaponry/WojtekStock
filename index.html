@@ -1,0 +1,2122 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wojtek Stock</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+<style>
+/* Themes: Light (default, the Locator's everyday look), Dark, Match device, Terminal (green screen).
+   No web fonts or CDNs: the page works with the internet down. */
+:root{
+  --bg:#eceff3; --panel:#ffffff; --ink:#1e2733; --muted:#5d6b7c; --line:#d5dbe3; --hover:#f3f6fa;
+  --accent:#1f5fbf; --accent-ink:#ffffff; --accent-soft:#e6eefb;
+  --ok:#17723f; --ok-soft:#e2f3e9; --dup:#8a5a00; --dup-soft:#fff2d1; --err:#b42318; --err-soft:#fdeceb;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  --radius:10px;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+:root[data-theme="dark"]{
+  --bg:#11151b; --panel:#1a2029; --ink:#e5eaf0; --muted:#94a2b4; --line:#2d3644; --hover:#222a35;
+  --accent:#6fa3ff; --accent-ink:#0d1420; --accent-soft:#1f2c45;
+  --ok:#5fd18e; --ok-soft:#173325; --dup:#f2c14e; --dup-soft:#3a2f12; --err:#ff8a7a; --err-soft:#3b1c19;
+}
+@media (prefers-color-scheme: dark){
+  :root[data-theme="auto"]{
+    --bg:#11151b; --panel:#1a2029; --ink:#e5eaf0; --muted:#94a2b4; --line:#2d3644; --hover:#222a35;
+    --accent:#6fa3ff; --accent-ink:#0d1420; --accent-soft:#1f2c45;
+    --ok:#5fd18e; --ok-soft:#173325; --dup:#f2c14e; --dup-soft:#3a2f12; --err:#ff8a7a; --err-soft:#3b1c19;
+  }
+}
+:root[data-theme="terminal"]{
+  --bg:#020d06; --panel:#04160b; --ink:#5cff8a; --muted:#2fa055; --line:#15502a; --hover:#08240f;
+  --accent:#9dffb8; --accent-ink:#021006; --accent-soft:#0b3a1b;
+  --ok:#9dffb8; --ok-soft:#0c3d1c; --dup:#e8ff6b; --dup-soft:#1f2a07; --err:#ff6b4a; --err-soft:#2a0e07;
+  --sans:var(--mono); --radius:2px;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{background:var(--bg);scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font:16px/1.45 var(--sans);font-variant-numeric:tabular-nums}
+:root[data-theme="terminal"] body{text-shadow:0 0 5px rgba(92,255,138,.45)}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--accent)}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.small{font-size:.86rem}
+[hidden]{display:none !important}
+
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.brand{font-weight:700;font-size:1.15rem;margin-right:6px;white-space:nowrap}
+.brand span{color:var(--muted);font-weight:500;font-size:.9rem}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{background:none;border:0;border-radius:8px;padding:7px 12px;cursor:pointer;color:var(--muted);font-weight:600}
+nav button[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
+nav button:hover{color:var(--ink)}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:.86rem;white-space:nowrap;background:var(--panel)}
+.chip.ok{border-color:var(--ok);color:var(--ok)}
+.chip.dup{border-color:var(--dup);color:var(--dup)}
+.chip.err{border-color:var(--err);color:var(--err)}
+.chip button{border:0;background:none;padding:0;cursor:pointer;color:inherit;text-decoration:underline;font-size:inherit}
+select.theme{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:4px 6px;font-size:.86rem}
+
+main{max-width:1180px;margin:0 auto;padding:16px 18px 60px}
+.banner{border-radius:var(--radius);padding:10px 14px;margin:0 0 12px;border:1px solid}
+.banner.warn{background:var(--dup-soft);border-color:var(--dup)}
+.banner.err{background:var(--err-soft);border-color:var(--err)}
+.banner.info{background:var(--accent-soft);border-color:var(--accent)}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.panel h2{margin:0 0 10px;font-size:1.08rem}
+.panel h3{margin:16px 0 6px;font-size:.98rem}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1 1 auto}
+.btn{display:inline-block;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:600;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--err);border-color:var(--err)}
+.btn.sm{padding:4px 9px;font-size:.86rem}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input[type=text],input[type=number],input[type=password],input[type=search],input[type=date],select,textarea{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:7px 10px;min-width:0}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+textarea{width:100%;min-height:90px}
+label.inline{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{font-size:.82rem;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel)}
+td.num,th.num{text-align:right}
+tr.flashrow td{animation:rowflash 1.2s ease-out}
+@keyframes rowflash{from{background:var(--accent-soft)}to{background:transparent}}
+.qty{width:80px;text-align:right}
+.item-name{font-weight:600}
+.item-sub{font-size:.84rem;color:var(--muted)}
+.tag{display:inline-block;border-radius:6px;padding:1px 7px;font-size:.78rem;font-weight:600;border:1px solid var(--line);white-space:nowrap}
+.tag.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+.tag.dup{color:var(--dup);border-color:var(--dup);background:var(--dup-soft)}
+.tag.err{color:var(--err);border-color:var(--err);background:var(--err-soft)}
+.tag.info{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+.modes{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
+.modes button{border:2px solid var(--line);background:var(--panel);border-radius:var(--radius);padding:12px 6px;cursor:pointer;font-weight:700;font-size:1.05rem}
+.modes button small{display:block;font-weight:500;font-size:.78rem;color:var(--muted);margin-top:2px}
+.modes button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.modes button[aria-pressed="true"] small{color:var(--accent)}
+.scanrow{display:flex;gap:10px;align-items:stretch}
+#scan{flex:1;font-size:1.5rem;padding:12px 16px;border:2px solid var(--accent);border-radius:var(--radius);font-family:var(--mono);background:var(--panel)}
+#scan.lost{border-color:var(--dup);background:var(--dup-soft)}
+.scanhint{margin:6px 2px 0}
+
+/* the flash: the one loud thing on the page */
+#flash{margin:12px 0;border-radius:var(--radius);padding:16px 18px;min-height:92px;border:2px solid var(--line);background:var(--panel);display:flex;gap:16px;align-items:center}
+#flash .fq{font-size:2.6rem;font-weight:800;line-height:1;min-width:2.2ch;text-align:center}
+#flash .fq:empty{display:none}
+#flash .ft{flex:1;min-width:0}
+#flash .big{font-size:1.45rem;font-weight:700;line-height:1.2;overflow-wrap:anywhere}
+#flash .sub{color:var(--muted);margin-top:4px}
+#flash.ok{border-color:var(--ok);background:var(--ok-soft)} #flash.ok .fq{color:var(--ok)}
+#flash.dup{border-color:var(--dup);background:var(--dup-soft)} #flash.dup .fq{color:var(--dup)}
+#flash.err{border-color:var(--err);background:var(--err-soft)} #flash.err .fq{color:var(--err)}
+#flash.pulse{animation:pulse .35s ease-out}
+@keyframes pulse{from{transform:scale(1.015)}to{transform:scale(1)}}
+@media (prefers-reduced-motion: reduce){#flash.pulse,tr.flashrow td{animation:none}}
+
+.listfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.adjbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--panel);padding:7px 14px;cursor:pointer;font-weight:600}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.progress{margin:8px 0 0;padding-left:0;list-style:none}
+.progress li{margin:4px 0;display:flex;gap:8px;align-items:baseline}
+.card-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+.card-grid dt{color:var(--muted)}
+.card-grid dd{margin:0;overflow-wrap:anywhere}
+.bigstock{font-size:2.6rem;font-weight:800;line-height:1}
+.results{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:8px}
+.results button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:var(--panel);padding:8px 10px;cursor:pointer}
+.results button:hover,.results button:focus-visible{background:var(--hover)}
+.qrbox{display:inline-block;background:#fff;padding:4px;border-radius:4px;line-height:0;vertical-align:middle}
+.empty{padding:14px 0;color:var(--muted)}
+.prog{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;background:var(--hover)}
+.bar{height:10px;border-radius:5px;background:var(--line);overflow:hidden;margin:8px 0 6px}
+.bar > div{height:100%;background:var(--accent);border-radius:5px;transition:width .6s ease}
+.bar.indet > div{width:35%;animation:indet 1.4s ease-in-out infinite}
+@keyframes indet{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
+@media (prefers-reduced-motion: reduce){.bar.indet > div{animation:none;width:100%;opacity:.5}}
+#syncChip[data-goto]{cursor:pointer}
+#prodTable tbody tr{cursor:pointer}
+#prodTable tbody tr:hover td{background:var(--hover)}
+.labpreview{padding:10px;background:var(--hover);border-radius:8px;border:1px solid var(--line)}
+.labpreview svg{box-shadow:0 1px 4px rgba(0,0,0,.25);border-radius:3px}
+.stock-zero{color:var(--dup);font-weight:700} .stock-neg{color:var(--err);font-weight:700}
+
+.modal-back{position:fixed;inset:0;background:rgba(10,15,25,.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
+.modal{background:var(--panel);border-radius:var(--radius);max-width:560px;width:100%;padding:20px;border:1px solid var(--line);max-height:90vh;overflow:auto}
+.modal h3{margin:0 0 10px}
+.modal .row.end{justify-content:flex-end;margin-top:16px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:8px;z-index:200;max-width:90vw;text-shadow:none}
+
+@media (max-width:720px){
+  header{padding:8px 12px;position:static} main{padding:12px 10px 50px}
+  nav button{padding:6px 9px} .qty{width:62px}
+  .modes{grid-template-columns:repeat(3,1fr)} .modes button{padding:10px 4px;font-size:.98rem}
+  #scan{font-size:1.2rem}
+  #flash .fq{font-size:2rem} #flash .big{font-size:1.15rem}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Wojtek Stock <span id="ver"></span></div>
+  <nav aria-label="Pages">
+    <button data-tab="station" aria-selected="true">Station</button>
+    <button data-tab="products" aria-selected="false">Products</button>
+    <button data-tab="labels" aria-selected="false">Labels</button>
+    <button data-tab="log" aria-selected="false">Log</button>
+    <button data-tab="people" aria-selected="false">People</button>
+    <button data-tab="setup" aria-selected="false">Setup</button>
+  </nav>
+  <div class="hdr-right">
+    <span id="opChip" class="chip">Not signed in</span>
+    <span id="modeChip" class="chip"></span>
+    <span id="syncChip" class="chip"></span>
+    <select class="theme" id="theme" aria-label="Theme">
+      <option value="light">Light</option><option value="dark">Dark</option>
+      <option value="auto">Match device</option><option value="terminal">Terminal</option>
+    </select>
+  </div>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <section id="tab-station">
+    <div class="modes" role="group" aria-label="Mode">
+      <button data-mode="receive" aria-pressed="true">Receive<small>Each scan adds 1</small></button>
+      <button data-mode="count" aria-pressed="false">Count<small>Count a shelf</small></button>
+      <button data-mode="adjust" aria-pressed="false">Adjust<small>With a reason</small></button>
+      <button data-mode="return" aria-pressed="false">Return<small>Scan the order</small></button>
+      <button data-mode="lookup" aria-pressed="false">Lookup<small>See stock</small></button>
+    </div>
+    <div class="scanrow">
+      <input id="scan" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Scan a barcode or SKU" placeholder="Scan a barcode or SKU">
+    </div>
+    <div class="scanhint small muted" id="scanHint"></div>
+    <div id="flash" aria-live="polite"><div class="fq"></div><div class="ft"><div class="big">Ready</div><div class="sub">Scan your badge, then scan products.</div></div></div>
+    <div id="linkPanel" class="panel" hidden></div>
+    <div id="modePanel"></div>
+    <div id="batchPanel" class="panel" hidden></div>
+  </section>
+
+  <section id="tab-products" hidden>
+    <div class="panel">
+      <input id="prodQ" type="search" style="width:100%;font-size:1.1rem;padding:10px 12px" placeholder="Search name, SKU, UPC or category  ( / )" autocomplete="off" spellcheck="false" aria-label="Search products">
+      <div class="row" style="margin-top:10px">
+        <select id="prodCat" aria-label="Category"></select>
+        <select id="prodStock" aria-label="Stock"><option value="">Any stock</option><option value="in">In stock</option><option value="low">5 or fewer</option><option value="out">Out of stock (0)</option><option value="neg">Below zero</option></select>
+        <select id="prodBar" aria-label="Barcode and SKU"><option value="">Any UPC and SKU</option><option value="noupc">No UPC</option><option value="nosku">No SKU</option></select>
+        <select id="prodShow" aria-label="Show"><option value="all">In-shop and read-only</option><option value="shop">Only ones Stock can change</option><option value="readonly">Only read-only</option></select>
+        <label class="small">Sort <select id="prodSort">
+          <option value="name:1">Name, A to Z</option><option value="name:-1">Name, Z to A</option>
+          <option value="sku:1">SKU, A to Z</option><option value="cat:1">Category, A to Z</option>
+          <option value="stock:1">Stock, lowest first</option><option value="stock:-1">Stock, highest first</option>
+          <option value="price:-1">Price, highest first</option><option value="price:1">Price, lowest first</option></select></label>
+        <button class="btn sm" id="prodReset">Clear filters</button>
+      </div>
+      <div class="small muted" id="prodSummary" style="margin-top:8px"></div>
+    </div>
+    <div class="panel">
+      <div class="tablewrap"><table id="prodTable"><thead><tr><th>Product</th><th>SKU</th><th>UPC</th><th>Category</th><th class="num">Stock</th><th class="num">Price</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn sm" id="prodMore" hidden>Show more</button><span class="grow"></span><a class="btn sm" href="/api/items.csv" download>Download all (CSV)</a></div>
+    </div>
+  </section>
+
+  <section id="tab-labels" hidden>
+    <div class="panel">
+      <h2>Labels</h2>
+      <p class="muted small" style="margin-top:0">Each label has a QR code of the product's SKU, with the name, variation, SKU and UPC printed beside it. Scanning a label at the station finds the product.</p>
+      <input id="labSearch" type="search" style="width:100%" placeholder="Scan or search to add a product" autocomplete="off">
+      <div id="labResults" class="results" hidden></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn sm" id="labAddNoGtin">Add products with no barcode</button>
+        <button class="btn sm" id="labAddNever">Add products never labeled</button>
+        <button class="btn sm" id="labAddAll">Add all in-shop products</button>
+        <button class="btn sm" id="labClear">Clear the list</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="tablewrap"><table id="labTable"><thead><tr><th>Product</th><th>SKU</th><th>Barcode</th><th class="num">Copies</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div id="labEmpty" class="empty">No labels on the list yet. Scan or search above, or print from a Receive.</div>
+      <div class="listfoot">
+        <span class="grow"></span>
+        <span id="labCount" class="muted small"></span>
+        <button class="btn" id="labPdf">Download PDF</button>
+        <button class="btn primary" id="labZebra" hidden>Print on the Zebra</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Label design</h2>
+      <div class="row" style="align-items:flex-start;gap:24px">
+        <div id="labPreview" class="labpreview" aria-label="Preview of the first label"></div>
+        <div style="flex:1 1 300px;min-width:240px">
+          <div class="row"><label class="small">Size <select id="labSize"></select></label></div>
+          <div class="row" style="margin-top:10px;gap:18px">
+            <label class="inline"><input type="checkbox" id="labName" checked> Name and variation</label>
+            <label class="inline"><input type="checkbox" id="labUpc"> UPC</label>
+          </div>
+          <p class="muted small">The QR code holds the SKU. The SKU prints as large as the label allows, on two lines when that makes it bigger. The preview shows the first product on the list.</p>
+          <p class="muted small">"Read wide" uses the same 2 × 3 in labels as upright: they still feed through the Zebra 2 in across, and the label is printed sideways, like the Locator's gun tags.</p>
+          <p class="muted small" id="labZebraNote" hidden>On the Zebra, the text uses the printer's own font, which is a little narrower than the preview's.</p>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Products without a SKU</h2>
+      <p class="muted small" style="margin-top:0">A label needs a SKU. Wojtek Stock can give these products new SKUs and save them to WooCommerce once you confirm.</p>
+      <div id="noSkuBody" class="muted">Loading…</div>
+    </div>
+  </section>
+
+  <section id="tab-log" hidden>
+    <div class="panel">
+      <div class="row">
+        <h2 class="grow" style="margin:0">Change log</h2>
+        <a class="btn sm" href="/api/log.csv" download>Download CSV</a>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input id="logQ" type="search" placeholder="Product, SKU, person, reason" class="grow">
+        <select id="logKind" aria-label="Change type"><option value="">All changes</option><option value="receive">Receive</option><option value="count">Count</option><option value="adjust">Adjust</option><option value="return">Returned</option><option value="note">Order note</option><option value="gtin">Barcode linked</option><option value="sku">SKU added</option></select>
+        <select id="logStatus" aria-label="Result"><option value="">Any result</option><option value="done">Done</option><option value="dryrun">Dry run</option><option value="pending">Waiting</option><option value="failed">Failed</option><option value="refused">Refused</option><option value="conflict">Not applied</option><option value="logged">Logged (damaged)</option><option value="cancelled">Cancelled</option></select>
+        <input id="logDay" type="date" aria-label="Day">
+      </div>
+    </div>
+    <div class="panel">
+      <div class="tablewrap"><table id="logTable"><thead><tr><th>When</th><th>Change</th><th>Product</th><th class="num">Before → after</th><th>Why</th><th>Who</th><th>Result</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn sm" id="logMore" hidden>Show older</button></div>
+    </div>
+  </section>
+
+  <section id="tab-people" hidden>
+    <div class="panel">
+      <h2>People and badges</h2>
+      <p class="muted small" style="margin-top:0">Each person scans their badge (<span class="mono">USR-</span> and their code) before scanning products, so every change is logged under their name. The Wojtek Locator's badges work here too: import its People export once. To sign out, scan <span class="mono">CMD-LOGOUT</span> or wait 10 idle minutes.</p>
+      <div class="tablewrap"><table id="peopleTable"><thead><tr><th>Name</th><th>Badge</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:12px">
+        <input id="pName" type="text" placeholder="Name">
+        <input id="pCode" type="text" placeholder="Badge code (optional)" class="mono">
+        <button class="btn" id="pAdd">Add person</button>
+      </div>
+      <h3>Import from the Wojtek Locator</h3>
+      <p class="muted small" style="margin-top:0">Download the people export from the Locator's People tab, then choose it here or paste its text.</p>
+      <div class="row"><input type="file" id="pFile" accept=".csv,text/csv"><button class="btn" id="pImport">Import</button></div>
+      <textarea id="pCsv" placeholder="Name,Badge,Active&#10;Ana,USR-ANA,yes" style="margin-top:8px"></textarea>
+      <h3>Print</h3>
+      <div class="row">
+        <button class="btn" id="badgesPdf">Badges (PDF)</button>
+        <button class="btn" id="cmdPdf">Command sheet (PDF)</button>
+      </div>
+      <p class="muted small">The command sheet has QR codes that switch the station to Receive, Count, Adjust or Lookup, and sign out. Tape it by the station.</p>
+      <h3>Require a badge</h3>
+      <label class="inline"><input type="checkbox" id="reqBadge"> Refuse changes until someone scans their badge</label>
+    </div>
+    <div class="panel" id="termPanel">
+      <h2>Station terminals</h2>
+      <p class="muted small" style="margin-top:0">A terminal is a station computer or tablet with its own key, so it never needs the shop password. Open the setup link once on that device. Revoking it stops it at once. Terminals can scan and change stock, but can't change Setup or settings.</p>
+      <div class="tablewrap"><table id="termTable"><thead><tr><th>Terminal</th><th>Added</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:12px"><input id="tName" type="text" placeholder="Name, such as Back room"><button class="btn" id="tAdd">Add terminal</button></div>
+      <div id="tLink" class="banner info" style="margin-top:12px" hidden></div>
+    </div>
+  </section>
+
+  <section id="tab-setup" hidden>
+    <div class="panel">
+      <h2>WooCommerce</h2>
+      <div id="wooInfo"></div>
+      <div id="syncProg"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="wooTest">Test connection</button>
+        <button class="btn" id="syncQuick">Sync now</button>
+        <button class="btn" id="syncFull">Full sync</button>
+        <a class="btn" href="/api/items.csv" download>Download products (CSV)</a>
+      </div>
+      <div id="wooTestOut" class="small" style="margin-top:8px"></div>
+    </div>
+    <div class="panel">
+      <h2>Distributor feed prefixes</h2>
+      <p class="muted small" style="margin-top:0">Products whose SKU starts with a ticked prefix are never shown at the station and never changed. These groups come from the SKUs in your store, largest first: tick every distributor feed. A prefix covers everything that starts with it, so <span class="mono">IRV</span> also covers <span class="mono">IRV-123</span> and <span class="mono">IRVX9</span>.</p>
+      <div class="row"><input id="prefFilter" type="search" placeholder="Filter groups"><label class="inline small"><input type="checkbox" id="prefSmall"> Show groups under 10 products</label></div>
+      <div class="tablewrap" style="max-height:420px;overflow:auto;margin-top:8px"><table id="prefTable"><thead><tr><th>Feed</th><th>Starts with</th><th class="num">Products</th><th>Examples</th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:10px"><input id="prefAdd" type="text" class="mono" placeholder="Add a prefix, such as RSR"><button class="btn sm" id="prefAddBtn">Add</button></div>
+      <p id="prefChosen" class="small" style="margin-bottom:0"></p>
+    </div>
+    <div class="panel">
+      <h2>Serialized gun categories</h2>
+      <p class="muted small" style="margin-top:0">Products in a ticked category, and their variations, are never changed here: their stock moves through FastBound and sales.</p>
+      <div id="catList" class="row" style="gap:6px 18px"></div>
+    </div>
+    <div class="panel">
+      <h2>Confirm</h2>
+      <div id="setupSummary"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="setupSave">Save</button>
+        <button class="btn primary" id="setupConfirm">Save and unlock changes</button>
+      </div>
+    </div>
+    <div class="panel" id="watchPanel">
+      <h2>Possible double restocks</h2>
+      <p class="muted small" style="margin-top:0">Returns Wojtek Stock already put back in stock, then refunded in WooCommerce with "Restock refunded items" ticked, so WooCommerce added them again. Check each product's stock and lower it with Adjust (Count correction) if it's now too high.</p>
+      <div id="watchBody"></div>
+    </div>
+    <div class="panel">
+      <h2>Stock changed outside sales</h2>
+      <p class="muted small" style="margin-top:0">Stock that changed without a WooCommerce order or a Wojtek Stock change to explain it: an edit in wp-admin, another plugin or app (such as BuckFFL or a marketplace sync), or a register that doesn't create orders. Worth a look if these show up often.</p>
+      <div id="driftBody"></div>
+    </div>
+    <div class="panel">
+      <h2>Dropbox backups</h2>
+      <div id="dbxBody"></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+/* Wojtek Stock station page. One file, no libraries: talks to server.py's /api. */
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const S = {st: null, items: new Map(), byG: new Map(), bySku: new Map(), itemsV: "", op: null, mode: "receive",
+           lists: {receive: [], count: [], adjust: []}, adj: {dir: "down", reason: "", note: ""}, last: null, pendingQty: 0,
+           review: null, ret: {order: null, back: {}, note: ""}, lookupId: null, batches: [], labels: [], tab: "station", lastActivity: Date.now()};
+const MODE_NAMES = {receive: "Receive", count: "Count", adjust: "Adjust", return: "Return", lookup: "Lookup"};
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem("wstock." + k); return v === null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem("wstock." + k, JSON.stringify(v)); }catch(e){} },
+};
+
+/* ---------- small helpers ---------- */
+async function api(path, body, method){
+  const opt = {method: method || (body !== undefined ? "POST" : "GET"), headers: {"X-Requested-With": "stock"}, credentials: "same-origin"};
+  if (S.op) opt.headers["X-Stock-Operator"] = S.op.code;
+  if (body !== undefined){ opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  let r;
+  try{ r = await fetch(path, opt); }
+  catch(e){ const err = new Error("Can't reach the Wojtek Stock server. Is the network up?"); err.status = 0; throw err; }
+  let j = null;
+  try{ j = await r.json(); }catch(e){}
+  if (!r.ok){ const err = new Error((j && j.error) || `The server said ${r.status}`); err.status = r.status; err.data = j || {}; throw err; }
+  return j;
+}
+let toastTimer;
+function toast(msg, ms){
+  let el = $("#toast");
+  if (!el){ el = document.createElement("div"); el.id = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, ms || 3500);
+}
+function modal({title, html, ok = "OK", cancel = "Cancel", danger = false, onOpen}){
+  return new Promise(resolve => {
+    const before = document.activeElement;
+    const back = document.createElement("div");
+    back.className = "modal-back";
+    back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h3>${esc(title)}</h3><div class="mbody">${html || ""}</div>
+      <div class="row end">${cancel ? `<button class="btn" data-v="0">${esc(cancel)}</button>` : ""}<button class="btn ${danger ? "danger" : "primary"}" data-v="1">${esc(ok)}</button></div></div>`;
+    const close = v => { document.removeEventListener("keydown", onKey, true); back.remove(); S.modalOpen = false; try{ before?.focus?.(); }catch(e){} resolve(v ? back : null); };
+    const onKey = e => { if (e.key === "Escape"){ e.preventDefault(); close(false); } else if (e.key === "Enter" && e.target.tagName !== "TEXTAREA"){ e.preventDefault(); close(true); } };
+    back.addEventListener("click", e => { if (e.target === back) close(false); const b = e.target.closest("button[data-v]"); if (b) close(b.dataset.v === "1"); });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(back);
+    S.modalOpen = true;
+    (back.querySelector("input,select,textarea") || back.querySelector("button[data-v='1']")).focus();
+    onOpen && onOpen(back);
+  });
+}
+const fmtNum = n => n === null || n === undefined || n === "" ? "–" : String(n);
+function ago(iso){
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString();
+}
+function dur(s){
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} sec`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min`;
+}
+const when = iso => iso ? new Date(iso).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "";
+function gkey(v){ const s = String(v || "").replace(/[\s-]/g, ""); return /^\d+$/.test(s) ? (s.replace(/^0+/, "") || "0") : ""; }
+function skey(v){ return String(v || "").trim().replace(/\s+/g, " ").toUpperCase(); }
+const itemTitle = it => it.name + (it.attrs ? ` (${it.attrs})` : "");
+function itemCell(it){
+  return `<div class="item-name">${esc(it.name)}</div><div class="item-sub">${it.attrs ? esc(it.attrs) + " · " : ""}<span class="mono">${esc(it.sku || "no SKU")}</span>${it.gtin ? ` · <span class="mono">${esc(it.gtin)}</span>` : ""}</div>`;
+}
+
+/* ---------- theme ---------- */
+function setTheme(t){ document.documentElement.dataset.theme = t; store.set("theme", t); $("#theme").value = t; }
+$("#theme").addEventListener("change", e => setTheme(e.target.value));
+setTheme(store.get("theme", "light"));
+
+/* ---------- sound (from the Locator): blip = added, double boop = already on the list, buzz = error, rising = done ---------- */
+let ac;
+function audio(){
+  if (!ac){
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    try{ if (navigator.audioSession) navigator.audioSession.type = "playback"; }catch(e){}
+  }
+  if (ac.state !== "running"){
+    ac.resume && ac.resume().catch(() => {});
+    try{ const b = ac.createBufferSource(); b.buffer = ac.createBuffer(1, 1, 22050); b.connect(ac.destination); b.start(0); }catch(e){}
+  }
+  return ac;
+}
+["keydown", "pointerdown", "touchend"].forEach(t => document.addEventListener(t, () => { try{ audio(); }catch(e){} }, {capture: true, passive: true}));
+function beep(kind){
+  try{
+    audio();
+    const seq = kind === "done" ? [[880, .07], [1320, .12]] : kind === "err" ? [[180, .28]] : kind === "dup" ? [[520, .07], [0, .06], [520, .07]] : [[1046, .06]];
+    let t = ac.currentTime;
+    for (const [f, d] of seq){
+      if (!f){ t += d; continue; }
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = kind === "err" ? "square" : kind === "dup" ? "triangle" : "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(.12, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
+      o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d); t += d;
+    }
+  }catch(e){}
+}
+function flash(kind, qty, big, sub){
+  const el = $("#flash");
+  el.className = kind || "";
+  el.querySelector(".fq").textContent = qty ?? "";
+  el.querySelector(".big").textContent = big || "";
+  el.querySelector(".sub").textContent = sub || "";
+  void el.offsetWidth; el.classList.add("pulse");
+}
+
+/* ---------- state from the server ---------- */
+let stateBusy = false;
+async function loadState(force){
+  if (stateBusy) return;
+  stateBusy = true;
+  try{
+    const r = await api("/api/state" + (S.st && !force ? "?v=" + encodeURIComponent(S.st.v) : ""));
+    if (!r.same){
+      S.st = r;
+      if (r.itemsV !== S.itemsV) await loadItems();
+      renderChrome();
+      if (S.tab === "people") renderPeople();
+      if (S.tab === "setup") renderSetupStatus();
+    }
+  }catch(e){
+    if (e.status === 401) location.reload();
+    $("#syncChip").className = "chip err"; $("#syncChip").textContent = "Server unreachable";
+  }finally{ stateBusy = false; }
+}
+async function loadItems(){
+  const r = await api("/api/items" + (S.itemsV ? "?v=" + encodeURIComponent(S.itemsV) : ""));
+  if (r.same) return;
+  S.itemsV = r.v;
+  S.items = new Map(); S.byG = new Map(); S.bySku = new Map();
+  for (const [id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats, price] of r.rows){
+    S.items.set(id, {id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats: cats || [], price: price || ""});
+  }
+  reindex();
+  renderMode();
+  if (S.tab === "products") renderProducts();
+  if (S.tab === "labels") renderLabels();
+}
+function reindex(){
+  S.byG = new Map(); S.bySku = new Map();
+  for (const it of S.items.values()){
+    const g = gkey(it.gtin), k = skey(it.sku);
+    if (g){ if (!S.byG.has(g)) S.byG.set(g, []); S.byG.get(g).push(it.id); }
+    if (k){ if (!S.bySku.has(k)) S.bySku.set(k, []); S.bySku.get(k).push(it.id); }
+  }
+}
+function matchTail(v){
+  // the last 3 to 6 letters or digits of a barcode or SKU (a torn barcode, a long SKU), as in the Locator
+  const t = skey(v);
+  if (!/^[A-Z0-9]{3,6}$/.test(t)) return [];
+  const ids = [];
+  for (const it of S.items.values()){
+    if ((it.gtin && it.gtin.replace(/\D/g, "").endsWith(t)) || (it.sku && skey(it.sku).endsWith(t))) ids.push(it.id);
+  }
+  return ids;
+}
+function matchCode(v){
+  const ids = new Set([...(S.byG.get(gkey(v)) || []), ...(S.bySku.get(skey(v)) || [])]);
+  return [...ids].filter(id => S.items.has(id));
+}
+const canWrite = () => S.st && S.st.setup.confirmed;
+const needBadge = () => S.st && S.st.requireBadge && S.st.people.length > 0 && !S.op;
+
+function renderChrome(){
+  const st = S.st;
+  $("#ver").textContent = st.version;
+  const mc = $("#modeChip");
+  mc.className = "chip " + (st.woo.write === "on" ? "ok" : st.woo.write === "dryrun" ? "dup" : "err");
+  mc.textContent = st.woo.write === "on" ? "Live" : st.woo.write === "dryrun" ? "Dry run" : "Writes off";
+  mc.title = st.woo.write === "on" ? "Changes are sent to WooCommerce" : "Nothing is sent to WooCommerce (WOO_WRITE in stock.env)";
+  const sc = $("#syncChip"), sy = st.sync || {}, pg = st.progress;
+  sc.dataset.goto = "setup";
+  if (pg){ sc.className = "chip"; sc.textContent = pg.pct !== null ? `Syncing ${pg.pct}%` : "Syncing…"; sc.title = `${pg.phase}${pg.detail ? ": " + pg.detail : ""}`; }
+  else if (sy.running){ sc.className = "chip"; sc.textContent = "Syncing…"; }
+  else if (sy.error){ sc.className = "chip err"; sc.textContent = "Sync problem"; sc.title = sy.error; }
+  else { sc.className = "chip"; sc.textContent = "Synced " + ago(sy.last_ok); sc.title = "Last full sync " + when(sy.last_full); }
+  const b = [];
+  if (!st.woo.ready) b.push(`<div class="banner err"><b>WooCommerce isn't set up.</b> Fill in WOO_URL, WOO_KEY and WOO_SECRET in stock.env, then restart.</div>`);
+  if (st.paused) b.push(`<div class="banner err"><b>Changes to WooCommerce are paused.</b> ${esc(st.paused.reason)} ${st.access.canManage ? `<button class="btn sm" id="resumeBtn">Resume</button>` : "Someone with the shop password can resume them."}</div>`);
+  if (pg && !sy.last_full) b.push(`<div class="banner info"><b>First sync: ${pg.pct !== null ? pg.pct + "%" : "starting"}</b>${pg.detail ? ` (${esc(pg.detail)})` : ""}${pg.eta !== null ? `, about ${esc(dur(pg.eta))} left` : ""}. It only reads; products appear at the station when it finishes.</div>`);
+  if (st.woo.ready && !st.setup.confirmed) b.push(`<div class="banner warn"><b>Changes are locked until Setup is confirmed.</b> Scanning and lookups work; tick your distributor feed prefixes on the <a href="#" data-goto="setup">Setup</a> tab to unlock changes.</div>`);
+  if (st.woo.write === "dryrun") b.push(`<div class="banner info"><b>Dry run.</b> Every change is checked against the live store and logged, but nothing is sent to WooCommerce. When the log looks right, set WOO_WRITE=on in stock.env and restart.</div>`);
+  if (st.woo.write === "off") b.push(`<div class="banner warn"><b>Writes are off</b> (WOO_WRITE=off): changes are refused.</div>`);
+  if (st.watchCount) b.push(`<div class="banner warn"><b>${st.watchCount} possible double restock${st.watchCount === 1 ? "" : "s"}:</b> a return Wojtek Stock already put back was refunded in WooCommerce with "Restock refunded items" ticked. See <a href="#" data-goto="setup">Setup</a>.</div>`);
+  if (sy.error && !sy.running) b.push(`<div class="banner warn"><b>Sync problem:</b> ${esc(sy.error)}</div>`);
+  $("#banners").innerHTML = b.join("");
+  renderOp();
+}
+document.addEventListener("click", async e => {
+  const g = e.target.closest("[data-goto]");
+  if (g){ e.preventDefault(); showTab(g.dataset.goto); }
+  if (e.target.id === "resumeBtn"){
+    try{ await api("/api/writes/resume", {}); toast("Resumed"); loadState(true); }catch(err){ toast(err.message); }
+  }
+});
+
+/* ---------- who's scanning ---------- */
+function signIn(code){
+  const p = (S.st?.people || []).find(x => x.code === code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+  if (!p){ beep("err"); flash("err", "", "Badge not recognized", `USR-${code} isn't set up. Add the person on the People tab.`); return; }
+  if (S.op && S.op.code === p.code){ beep("dup"); flash("dup", "", `Still signed in as ${p.name}`, ""); return; }
+  saveLists();
+  S.op = {code: p.code, name: p.name};
+  store.set("op", {code: p.code, name: p.name, at: Date.now()});
+  loadLists();
+  beep("done"); flash("ok", "", `Hi, ${p.name}`, `${MODE_NAMES[S.mode]} mode. Changes are logged under your name.`);
+  renderOp(); renderMode();
+}
+function signOut(quiet){
+  if (!S.op){ if (!quiet){ beep("dup"); flash("dup", "", "Nobody is signed in", ""); } return; }
+  saveLists();
+  const name = S.op.name;
+  S.op = null; store.set("op", null);
+  loadLists();
+  if (!quiet){ beep("done"); flash("ok", "", `Signed out ${name}`, "Their lists are kept for when they sign in again."); }
+  renderOp(); renderMode();
+}
+function renderOp(){
+  const c = $("#opChip");
+  if (S.op){ c.className = "chip ok"; c.innerHTML = `${esc(S.op.name)} <button id="signOutBtn" title="Sign out">sign out</button>`; }
+  else { c.className = "chip" + (S.st && S.st.requireBadge && S.st.people.length ? " dup" : ""); c.textContent = "Not signed in"; }
+}
+$("#opChip").addEventListener("click", e => { if (e.target.id === "signOutBtn") signOut(); });
+function activity(){ S.lastActivity = Date.now(); if (S.op) store.set("op", {...S.op, at: Date.now()}); }
+setInterval(() => { if (S.op && Date.now() - S.lastActivity > 10 * 60 * 1000){ signOut(true); toast("Signed out after 10 idle minutes"); } }, 20000);
+
+/* lists are kept per person, so one person's scans are never credited to another */
+function listKey(){ return "lists." + (S.op ? S.op.code : "_"); }
+function saveLists(){ store.set(listKey(), {lists: S.lists, adj: S.adj, review: S.review, ret: S.ret}); }
+function loadLists(){
+  const v = store.get(listKey(), null) || {};
+  S.lists = Object.assign({receive: [], count: [], adjust: []}, v.lists || {});
+  S.adj = Object.assign({dir: "down", reason: "", note: ""}, v.adj || {});
+  S.review = v.review || null;
+  S.ret = v.ret && v.ret.order ? v.ret : {order: null, back: {}, note: ""};
+  S.last = null; S.pendingQty = 0;
+}
+
+/* ---------- tabs ---------- */
+$$("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+function showTab(name){
+  S.tab = name;
+  $$("nav button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  for (const t of ["station", "products", "labels", "log", "people", "setup"]) $("#tab-" + t).hidden = t !== name;
+  if (name === "products"){ renderProducts(); setTimeout(() => $("#prodQ").focus(), 0); }
+  if (name === "station") focusScan();
+  if (name === "labels") { renderLabels(); loadNoSku(); }
+  if (name === "log") loadLog(true);
+  if (name === "people") renderPeople();
+  if (name === "setup") loadSetup();
+  store.set("tab", name);
+}
+
+/* ---------- the station ---------- */
+const scan = $("#scan");
+const onStation = () => S.tab === "station";
+function focusScan(){ if (onStation() && !S.modalOpen) scan.focus(); }
+scan.addEventListener("blur", () => { scan.classList.add("lost"); setTimeout(() => {
+  const a = document.activeElement;
+  if (onStation() && !S.modalOpen && (!a || a === document.body)) scan.focus();
+}, 150); });
+scan.addEventListener("focus", () => scan.classList.remove("lost"));
+document.addEventListener("keydown", e => {   // a scanner types into whatever has focus: steer stray keys to the scan box
+  if (!onStation() || e.ctrlKey || e.metaKey || e.altKey || S.modalOpen) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+  if (e.key.length === 1 || e.key === "Enter") scan.focus();
+});
+scan.addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const raw = scan.value; scan.value = "";
+  raw.split(/[\n\t]+/).map(s => s.trim()).filter(Boolean).forEach(handleScan);
+});
+$$(".modes button").forEach(b => b.addEventListener("click", () => { setMode(b.dataset.mode); focusScan(); }));
+function setMode(m){
+  S.mode = m; store.set("mode", m);
+  S.last = null; S.pendingQty = 0;
+  $$(".modes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+  $("#scanHint").textContent = {
+    receive: "Each scan adds 1. To add more at once, scan, then type +12 and press Enter.",
+    count: "Scan everything on the shelf. Repeat scans add 1; type +12 after a scan for a case. Then review the differences.",
+    adjust: "Pick Decrease or Increase and a reason, then scan. Type +3 after a scan to change 3.",
+    return: "Scan the order barcode on the packing slip, then each item that came back. Type +3 after a scan for 3.",
+    lookup: "Scan anything to see its stock, barcode and history.",
+  }[m];
+  hideLink();
+  renderMode();
+}
+
+function handleScan(v){
+  activity();
+  const up = v.toUpperCase();
+  if (up.startsWith("USR-")) return signIn(up.slice(4));
+  if (up === "CMD-LOGOUT") return signOut();
+  const cm = up.match(/^CMD-(RECEIVE|COUNT|ADJUST|RETURN|LOOKUP)$/);
+  if (cm){ setMode(cm[1].toLowerCase()); beep("done"); flash("ok", "", `${MODE_NAMES[S.mode]} mode`, $("#scanHint").textContent); return; }
+  const qm = v.match(/^[+*xX]\s*(\d{1,5})$/);
+  if (qm) return S.mode === "return" ? returnQty(+qm[1]) : setQty(+qm[1]);
+  hideLink();
+  if (S.mode === "return") return returnScan(v);
+  const ids = matchCode(v);
+  if (ids.length === 1) return gotItem(S.items.get(ids[0]), v);
+  if (ids.length > 1) return pickOne(ids, v);
+  const tail = matchTail(v);   // exact matches always come first
+  if (tail.length === 1){
+    gotItem(S.items.get(tail[0]), v);
+    if ($("#flash").className.includes("ok") || $("#flash").className.includes("dup")) $("#flash .sub").textContent += ` · found by the end of its barcode or SKU (${skey(v)})`;
+    return;
+  }
+  if (tail.length > 1 && tail.length <= 30) return pickOne(tail, v, true);
+  return unknownCode(v);
+}
+
+function gotItem(it, code){
+  if (S.mode === "lookup"){
+    beep("ok"); flash("ok", "", itemTitle(it), `SKU ${it.sku || "none"} · reading live stock…`);
+    return showLookup(it.id);
+  }
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", "Changes are logged under the person who scanned them."); return; }
+  if (it.scope !== "shop"){ beep("err"); flash("err", "", `${itemTitle(it)} can't be changed`, it.why || "Read-only"); return; }
+  if (S.review && S.mode === "count"){ S.review = null; }
+  const list = S.lists[S.mode];
+  const step = S.pendingQty || 1;
+  S.pendingQty = 0;
+  let line = list.find(l => l.id === it.id), dup = !!line;
+  if (line) line.n += step; else { line = {id: it.id, n: step}; list.unshift(line); }
+  S.last = {mode: S.mode, id: it.id, step};
+  saveLists();
+  const word = S.mode === "count" ? "counted" : "on the list";
+  beep(dup ? "dup" : "ok");
+  flash(dup ? "dup" : "ok", (S.mode === "adjust" && S.adj.dir === "down" ? "−" : "+") + step, itemTitle(it),
+        dup ? `Already scanned: now ${line.n} ${word}` : `${line.n} ${word}` + (S.mode === "receive" && it.stock !== null ? ` · ${it.stock} in stock before this` : ""));
+  renderMode(it.id);
+}
+function setQty(n){
+  if (S.mode === "lookup"){ beep("err"); flash("err", "", "Quantities work in Receive, Count and Adjust", ""); return; }
+  if (n < 1){ beep("err"); flash("err", "", "The quantity should be 1 or more", ""); return; }
+  const line = S.last && S.last.mode === S.mode && S.lists[S.mode].find(l => l.id === S.last.id);
+  if (!line){
+    S.pendingQty = n;
+    beep("ok"); flash("ok", "×" + n, `The next scan counts ${n}`, "Scan the product now.");
+    return;
+  }
+  line.n += n - S.last.step;
+  S.last.step = n;
+  saveLists();
+  const it = S.items.get(line.id);
+  beep("ok"); flash("ok", (S.mode === "adjust" && S.adj.dir === "down" ? "−" : "+") + n, itemTitle(it), `${line.n} ${S.mode === "count" ? "counted" : "on the list"}`);
+  renderMode(line.id);
+}
+async function pickOne(ids, code, tail){
+  beep("dup");
+  flash("dup", "", tail ? `${ids.length} products end in ${skey(code)}` : `${ids.length} products have ${code}`, "Pick the one in your hand.");
+  const back = await modal({title: tail ? `Which product ends in ${skey(code)}?` : `Which product is ${code}?`, ok: "Use this one",
+    html: `<div class="results">${ids.map((id, i) => { const it = S.items.get(id); return `<label style="display:flex;gap:8px;padding:8px;border-bottom:1px solid var(--line)"><input type="radio" name="pick" value="${id}" ${i ? "" : "checked"}><span>${itemCell(it)}</span></label>`; }).join("")}</div>`});
+  if (!back) return focusScan();
+  const id = +back.querySelector("input[name=pick]:checked").value;
+  gotItem(S.items.get(id), code);
+  focusScan();
+}
+async function unknownCode(v){
+  let matches = [];
+  try{ matches = (await api("/api/resolve?code=" + encodeURIComponent(v))).matches; }catch(e){}
+  beep("err");
+  if (matches.length){
+    const m = matches[0];
+    const what = {feed: "a distributor feed product", gun: "a serialized gun", parent: "a variable product (scan one of its variations)", other: "not a stocked product"}[m.scope] || m.scope;
+    flash("err", "", `${v} is ${what}`, `${m.name}. ${m.why || ""}`.trim());
+    return;
+  }
+  if (!gkey(v) || v.replace(/\D/g, "").length < 8){
+    flash("err", "", `No in-shop product has ${v}`, "Check the code, or find the product by name in Lookup.");
+    return;
+  }
+  flash("err", "", `Unknown barcode ${v}`, "Link it to a product below, and it will scan from now on.");
+  showLink(v);
+}
+
+/* linking an unknown barcode to a product (saved to the product's GTIN/UPC field in WooCommerce) */
+function searchItems(text, limit = 30, scopes = ["shop", "readonly"]){
+  const words = skey(text).split(" ").filter(Boolean);
+  if (!words.length) return [];
+  const out = [];
+  for (const it of S.items.values()){
+    if (!scopes.includes(it.scope)) continue;
+    const hay = skey(`${it.name} ${it.attrs} ${it.sku} ${it.gtin}`);
+    if (words.every(w => hay.includes(w))){ out.push(it); if (out.length >= limit) break; }
+  }
+  return out;
+}
+function showLink(code){
+  const p = $("#linkPanel");
+  p.hidden = false;
+  p.innerHTML = `<h2>Link barcode <span class="mono">${esc(code)}</span> to a product</h2>
+    <p class="muted small" style="margin-top:0">Find the product by name or SKU. The barcode is saved to the product in WooCommerce (its GTIN/UPC field), so your register recognizes it too.</p>
+    <div class="row"><input type="search" id="linkQ" class="grow" placeholder="Name or SKU" autocomplete="off"><button class="btn" id="linkCancel">Cancel</button></div>
+    <div id="linkRes" class="results" hidden></div>`;
+  const qEl = $("#linkQ"), res = $("#linkRes");
+  qEl.addEventListener("input", () => {
+    const found = searchItems(qEl.value, 40);
+    res.hidden = !qEl.value.trim();
+    res.innerHTML = found.length ? found.map(it => `<button data-id="${it.id}">${itemCell(it)}${it.gtin ? `<div class="item-sub">Has barcode ${esc(it.gtin)}: linking replaces it</div>` : ""}${it.scope !== "shop" ? `<div class="item-sub">${esc(it.why)}</div>` : ""}</button>`).join("")
+      : `<div class="empty" style="padding:10px">No in-shop product matches.</div>`;
+  });
+  qEl.addEventListener("keydown", e => { if (e.key === "Escape"){ hideLink(); focusScan(); } });
+  res.addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if (b) linkTo(S.items.get(+b.dataset.id), code); });
+  $("#linkCancel").addEventListener("click", () => { hideLink(); focusScan(); });
+  qEl.focus();
+}
+function hideLink(){ const p = $("#linkPanel"); p.hidden = true; p.innerHTML = ""; }
+async function linkTo(it, code, replace){
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); hideLink(); focusScan(); return; }
+  if (it.gtin && !replace){
+    const ok = await modal({title: "Replace its barcode?", ok: "Replace", danger: true,
+      html: `<p>${esc(itemTitle(it))} already has barcode <span class="mono">${esc(it.gtin)}</span>. Replace it with <span class="mono">${esc(code)}</span>?</p>`});
+    if (!ok) return;
+    replace = true;
+  }
+  try{
+    const r = await api("/api/link", {id: it.id, code, replace: !!replace});
+    it.gtin = code; reindex();
+    hideLink();
+    trackBatch(r.batch, "gtin", `Barcode ${code} → ${itemTitle(it)}`);
+    if (!r.checkDigit) toast("Saved, but that barcode's check digit doesn't add up: make sure it scanned correctly", 6000);
+    if (S.mode === "lookup") { beep("ok"); flash("ok", "", itemTitle(it), `Barcode ${code} linked`); showLookup(it.id); }
+    else gotItem(it, code);
+  }catch(e){
+    if (e.data && e.data.needsReplace){ it.gtin = e.data.current || it.gtin || "?"; return linkTo(it, code, false); }
+    beep("err"); flash("err", "", "Couldn't link that barcode", e.message);
+  }
+  focusScan();
+}
+
+/* ---------- the panel under the scan box, by mode ---------- */
+function renderMode(flashId){
+  const p = $("#modePanel");
+  if (S.mode === "lookup") return renderLookup();
+  if (S.mode === "return") return renderReturn(flashId);
+  if (S.mode === "count" && S.review) return renderReview();
+  const list = S.lists[S.mode].filter(l => S.items.has(l.id));
+  const units = list.reduce((a, l) => a + l.n, 0);
+  const isAdj = S.mode === "adjust", down = S.adj.dir === "down";
+  const reasons = S.st ? S.st.reasons[S.adj.dir] : [];
+  if (isAdj && !reasons.includes(S.adj.reason)) S.adj.reason = "";
+  const head = isAdj ? `<div class="adjbar">
+      <div class="seg" role="group" aria-label="Direction"><button data-dir="down" aria-pressed="${down}">Decrease</button><button data-dir="up" aria-pressed="${!down}">Increase</button></div>
+      <select id="adjReason" aria-label="Reason"><option value="">Reason…</option>${reasons.map(r => `<option ${r === S.adj.reason ? "selected" : ""}>${esc(r)}</option>`).join("")}</select>
+      <input id="adjNote" type="text" class="grow" placeholder="Note (job number, vendor RMA…)" value="${esc(S.adj.note)}">
+    </div>` : "";
+  const qtyHead = S.mode === "count" ? "Counted" : isAdj ? (down ? "Remove" : "Add") : "Add";
+  const rows = list.map(l => { const it = S.items.get(l.id); return `<tr data-id="${l.id}" class="${l.id === flashId ? "flashrow" : ""}">
+      <td>${itemCell(it)}${l.err ? `<div class="item-sub" style="color:var(--err)">${esc(l.err)}</div>` : ""}</td>
+      ${S.mode === "count" ? "" : `<td class="num">${fmtNum(it.stock)}</td>`}
+      <td class="num"><input class="qty" type="number" min="${S.mode === "count" ? 0 : 1}" value="${l.n}" aria-label="${qtyHead}"></td>
+      <td class="num"><button class="btn sm" data-rm title="Take off the list">✕</button></td></tr>`; }).join("");
+  const empty = {receive: "Scan products as you unpack them. Nothing changes in WooCommerce until you press Add to stock.",
+                 count: "Scan everything on one shelf or in one bin. Nothing changes until you review and apply.",
+                 adjust: "Pick Decrease or Increase and a reason, then scan the products."}[S.mode];
+  let action = "";
+  if (S.mode === "receive") action = `Add ${units} unit${units === 1 ? "" : "s"} to stock`;
+  if (S.mode === "count") action = `Review ${list.length} product${list.length === 1 ? "" : "s"}`;
+  if (isAdj) action = `${down ? "Remove" : "Add"} ${units} unit${units === 1 ? "" : "s"}${S.adj.reason ? " (" + S.adj.reason + ")" : ""}`;
+  p.innerHTML = `<div class="panel">${head}
+    ${list.length ? `<div class="tablewrap"><table><thead><tr><th>Product</th>${S.mode === "count" ? "" : `<th class="num">In stock</th>`}<th class="num">${qtyHead}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">${esc(empty)}</div>`}
+    <div class="listfoot"><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${S.mode === "count" ? "" : `, ${units} unit${units === 1 ? "" : "s"}`}</span><span class="grow"></span>
+      ${list.length ? `<button class="btn" id="listClear">Clear</button>` : ""}
+      <button class="btn primary" id="listGo" ${list.length && canWrite() ? "" : "disabled"} title="${canWrite() ? "" : "Locked until Setup is confirmed"}">${esc(action)}</button></div></div>`;
+}
+$("#modePanel").addEventListener("input", e => {
+  const tr = e.target.closest("tr[data-id]");
+  if (tr && e.target.classList.contains("qty")){
+    const l = (S.review && S.mode === "count" ? S.review.rows : S.lists[S.mode]).find(x => x.id === +tr.dataset.id);
+    const v = Math.max(0, Math.floor(+e.target.value || 0));
+    if (l){ if (S.review && S.mode === "count") l.counted = v; else l.n = v; saveLists(); }
+    if (S.review && S.mode === "count") updateReviewRow(tr);
+  }
+  if (e.target.id === "adjNote"){ S.adj.note = e.target.value; saveLists(); }
+});
+$("#modePanel").addEventListener("change", e => {
+  if (e.target.id === "adjReason"){ S.adj.reason = e.target.value; saveLists(); renderMode(); focusScan(); }
+  if (e.target.classList.contains("qty") && !S.review && S.lists[S.mode]){ S.lists[S.mode] = S.lists[S.mode].filter(l => l.n > 0 || S.mode === "count"); saveLists(); renderMode(); }
+  if (e.target.matches("input[data-apply]")){ const r = S.review.rows.find(x => x.id === +e.target.closest("tr").dataset.id); r.apply = e.target.checked; saveLists(); renderReviewFoot(); }
+});
+$("#modePanel").addEventListener("click", async e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.dir){ S.adj.dir = b.dataset.dir; S.adj.reason = ""; saveLists(); renderMode(); return; }
+  if (b.hasAttribute("data-rm")){
+    const id = +b.closest("tr").dataset.id;
+    S.lists[S.mode] = S.lists[S.mode].filter(l => l.id !== id); saveLists(); renderMode(); focusScan(); return;
+  }
+  if (b.id === "listClear"){
+    if (await modal({title: "Clear the list?", html: `<p>Takes everything off this ${MODE_NAMES[S.mode]} list. Nothing in WooCommerce changes.</p>`, ok: "Clear", danger: true})){
+      S.lists[S.mode] = []; S.last = null; saveLists(); renderMode();
+    }
+    return focusScan();
+  }
+  if (b.id === "listGo") return S.mode === "count" ? startReview() : commitList();
+  if (b.id === "revBack"){ S.review = null; saveLists(); renderMode(); return focusScan(); }
+  if (b.id === "revApply") return applyCount();
+  if (b.id === "revRefresh") return startReview();
+  if (b.dataset.lookupAct) return lookupAction(b.dataset.lookupAct);
+});
+
+async function commitList(){
+  const mode = S.mode, list = S.lists[mode].filter(l => l.n > 0 && S.items.has(l.id));
+  if (!list.length) return;
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
+  const body = {kind: mode, lines: list.map(l => ({id: l.id, qty: l.n}))};
+  if (mode === "adjust"){
+    if (!S.adj.reason){ beep("err"); flash("err", "", "Pick a reason first", ""); $("#adjReason")?.focus(); return; }
+    if (S.adj.reason.toLowerCase() === "other" && !S.adj.note.trim()){ beep("err"); flash("err", "", "Add a note saying why", "The reason is Other."); $("#adjNote")?.focus(); return; }
+    Object.assign(body, {dir: S.adj.dir, reason: S.adj.reason, note: S.adj.note.trim()});
+  }
+  const units = list.reduce((a, l) => a + l.n, 0);
+  try{
+    const r = await api("/api/commit", body);
+    const sent = list.map(l => ({id: l.id, n: l.n}));
+    trackBatch(r.batch, mode, `${MODE_NAMES[mode]}: ${units} unit${units === 1 ? "" : "s"} on ${list.length} product${list.length === 1 ? "" : "s"}`, sent);
+    S.lists[mode] = S.lists[mode].filter(l => !list.includes(l));   // they're on their way; failures come back
+    if (mode === "adjust") S.adj.note = "";
+    S.last = null; saveLists(); renderMode();
+    flash("ok", "", "Sending to WooCommerce…", "Each product is re-read live, changed, then read back to confirm.");
+  }catch(e){ beep("err"); flash("err", "", "Not sent", e.message); }
+  focusScan();
+}
+
+/* ---------- progress of changes on their way to WooCommerce ---------- */
+function trackBatch(id, kind, label, lines){
+  S.batches.unshift({id, kind, label, lines: lines || [], jobs: [], done: false, at: Date.now()});
+  S.batches = S.batches.slice(0, 4);
+  pollBatches();
+}
+let batchTimer = null;
+async function pollBatches(){
+  clearTimeout(batchTimer);
+  const open = S.batches.filter(b => !b.done);
+  for (const b of open){
+    try{
+      const r = await api("/api/batch?id=" + b.id);
+      b.jobs = r.jobs; b.paused = r.paused;
+      if (b.jobs.length && b.jobs.every(j => !["pending", "working"].includes(j.status))) finishBatch(b);
+    }catch(e){}
+  }
+  renderBatches();
+  if (S.batches.some(b => !b.done)) batchTimer = setTimeout(pollBatches, 1000);
+}
+const STATUS = {done: ["ok", "Done"], dryrun: ["info", "Dry run"], logged: ["", "Logged"], pending: ["", "Waiting"], working: ["", "Sending"],
+                failed: ["err", "Failed"], refused: ["err", "Refused"], conflict: ["dup", "Not applied"], cancelled: ["", "Cancelled"]};
+function statusTag(s){ const [c, t] = STATUS[s] || ["", s]; return `<span class="tag ${c}">${esc(t)}</span>`; }
+function finishBatch(b){
+  b.done = true; b.doneAt = Date.now();
+  setTimeout(renderBatches, 2 * 60 * 1000 + 500);
+  const bad = b.jobs.filter(j => !["done", "dryrun", "logged"].includes(j.status));
+  const dry = b.jobs.some(j => j.status === "dryrun");
+  if (["receive", "adjust"].includes(b.kind) && bad.length){   // put the ones that didn't go back on the list, with why
+    const list = S.lists[b.kind];
+    for (const j of bad){
+      const sent = b.lines.find(l => l.id === j.item_id);
+      if (sent && !list.find(l => l.id === j.item_id)) list.push({id: j.item_id, n: sent.n, err: j.error});
+    }
+    saveLists();
+  }
+  if (b.kind === "count" && S.review){
+    for (const j of b.jobs){ const r = S.review.rows.find(x => x.id === j.item_id); if (r){ r.result = j.status; r.err = j.error; } }
+    if (bad.length === 0){ S.review = null; S.lists.count = []; }
+    saveLists();
+  }
+  if (bad.length){ beep("err"); flash("err", "", `${bad.length} of ${b.jobs.length} not changed`, bad[0].error || "See below."); }
+  else { beep("done"); flash("ok", "✓", dry ? "Dry run finished: nothing sent" : "Saved in WooCommerce", b.label); }
+  loadItems().then(() => { renderMode(); if (S.mode === "lookup" && S.lookupId) showLookup(S.lookupId, true); });
+}
+function renderBatches(){
+  const p = $("#batchPanel");
+  const show = S.batches.filter(b => !b.done || Date.now() - (b.doneAt || b.at) < 2 * 60 * 1000).slice(0, 2);
+  if (!show.length){ p.hidden = true; return; }
+  p.hidden = false;
+  p.innerHTML = show.map(b => {
+    const n = b.jobs.length, fin = b.jobs.filter(j => !["pending", "working"].includes(j.status)).length;
+    return `<div class="row"><b class="grow">${esc(b.label)}</b><span class="small muted">${b.done ? "Finished" : `${fin} of ${n || "…"}`}</span>
+      ${b.done && b.kind === "receive" && b.jobs.some(j => ["done", "dryrun"].includes(j.status)) ? `<button class="btn sm" data-labels="${b.id}">Print labels for these</button>` : ""}
+      ${b.done ? `<button class="btn sm" data-dismiss="${b.id}">Hide</button>` : ""}</div>
+      ${b.paused ? `<div class="banner err small" style="margin:6px 0">Changes are paused: ${esc(b.paused.reason)}</div>` : ""}
+      <ul class="progress">${b.jobs.map(j => `<li>${statusTag(j.status)} <span>${esc(j.name)}${changeText(j)}${j.error ? ` <span class="muted small">· ${esc(j.error)}</span>` : ""}</span></li>`).join("")}</ul>`;
+  }).join("<hr style='border:0;border-top:1px solid var(--line);margin:12px 0'>");
+}
+function changeText(j){
+  if (j.kind === "note") return " · note added to the order";
+  if (j.kind === "return") return j.restock ? ` · ${j.qty} back in stock${j.before !== null && j.after !== null && j.before !== undefined ? ` (${j.before} → ${j.after})` : ""}` : ` · ${j.qty} logged as damaged, not restocked`;
+  if (j.kind === "gtin") return ` · barcode ${esc(j.value)}`;
+  if (j.kind === "sku") return ` · SKU ${esc(j.value || j.after || "")}`;
+  const d = j.delta !== null && j.delta !== undefined ? (j.delta > 0 ? "+" : "") + j.delta : (j.target !== null ? "= " + j.target : "");
+  return ` · ${d}${j.before !== null && j.after !== null && j.before !== undefined ? ` (${j.before} → ${j.after})` : ""}`;
+}
+$("#batchPanel").addEventListener("click", e => {
+  const d = e.target.closest("[data-dismiss]");
+  if (d){ S.batches = S.batches.filter(b => b.id !== d.dataset.dismiss); renderBatches(); focusScan(); }
+  const l = e.target.closest("[data-labels]");
+  if (l){
+    const b = S.batches.find(x => x.id === l.dataset.labels);
+    for (const j of b.jobs.filter(j => ["done", "dryrun"].includes(j.status))) addLabel(j.item_id, b.lines.find(x => x.id === j.item_id)?.n || 1, true);
+    showTab("labels");
+  }
+});
+
+/* ---------- count: review the differences against live stock, apply only what's ticked ---------- */
+async function startReview(){
+  const list = S.lists.count.filter(l => S.items.has(l.id));
+  if (!list.length) return;
+  flash("", "", "Reading live stock…", `${list.length} product${list.length === 1 ? "" : "s"} from WooCommerce`);
+  try{
+    const r = await api("/api/live", {ids: list.map(l => l.id)});
+    S.review = {at: new Date().toISOString(), rows: list.map(l => {
+      const live = r.items[String(l.id)] || {};
+      const stock = live.stock;
+      return {id: l.id, counted: l.n, live: stock, fresh: !!live.fresh, scope: live.scope || "shop", apply: stock !== null && stock !== undefined && stock !== l.n && (live.scope || "shop") === "shop"};
+    })};
+    saveLists();
+    await loadItems();
+    const diffs = S.review.rows.filter(x => x.apply).length;
+    beep(diffs ? "dup" : "done");
+    flash(diffs ? "dup" : "ok", diffs || "✓", diffs ? `${diffs} difference${diffs === 1 ? "" : "s"}` : "Everything matches", diffs ? "Untick any you don't want to change, then apply." : "Nothing to change in WooCommerce.");
+  }catch(e){ beep("err"); flash("err", "", "Couldn't read live stock", e.message); }
+  renderMode();
+}
+function renderReview(){
+  const rows = S.review.rows.map(r => { const it = S.items.get(r.id) || {name: "Item " + r.id, attrs: "", sku: "", gtin: ""};
+    return `<tr data-id="${r.id}"><td>${itemCell(it)}${r.scope !== "shop" ? `<div class="item-sub" style="color:var(--err)">${esc(it.why || "Can't be changed")}</div>` : ""}${r.err ? `<div class="item-sub" style="color:var(--err)">${esc(r.err)}</div>` : ""}</td>
+      <td class="num"><input class="qty" type="number" min="0" value="${r.counted}" aria-label="Counted"></td>
+      <td class="num">${fmtNum(r.live)}${r.fresh ? "" : ` <span class="tag dup" title="Couldn't read it live">old</span>`}</td>
+      <td class="num diff"></td>
+      <td class="num"><input type="checkbox" data-apply ${r.apply ? "checked" : ""} ${r.scope !== "shop" || r.live === null ? "disabled" : ""} aria-label="Apply"></td></tr>`; }).join("");
+  $("#modePanel").innerHTML = `<div class="panel"><h2>Review the count</h2>
+    <p class="muted small" style="margin-top:0">WooCommerce stock read live at ${esc(when(S.review.at))}. Applying sets WooCommerce to what you counted, but only if stock hasn't moved since this review (a sale in between is caught, and that product is left alone).</p>
+    <div class="tablewrap"><table><thead><tr><th>Product</th><th class="num">Counted</th><th class="num">WooCommerce</th><th class="num">Difference</th><th class="num">Apply</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="listfoot"><button class="btn" id="revBack">Back to the list</button><button class="btn" id="revRefresh">Read again</button><span class="grow"></span><button class="btn primary" id="revApply"></button></div></div>`;
+  $$("#modePanel tr[data-id]").forEach(updateReviewRow);
+  renderReviewFoot();
+}
+function updateReviewRow(tr){
+  const r = S.review.rows.find(x => x.id === +tr.dataset.id);
+  const td = tr.querySelector(".diff");
+  if (r.live === null || r.live === undefined){ td.textContent = "–"; return; }
+  const d = r.counted - r.live;
+  td.innerHTML = d === 0 ? `<span class="tag ok">Matches</span>` : `<b style="color:var(--${d > 0 ? "ok" : "err"})">${d > 0 ? "+" : ""}${d}</b>`;
+}
+function renderReviewFoot(){
+  const n = S.review.rows.filter(r => r.apply && r.counted !== r.live).length;
+  const b = $("#revApply");
+  if (b){ b.textContent = `Apply ${n} change${n === 1 ? "" : "s"}`; b.disabled = !n || !canWrite(); }
+}
+async function applyCount(){
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
+  const rows = S.review.rows.filter(r => r.apply && r.counted !== r.live && r.live !== null);
+  if (!rows.length) return;
+  try{
+    const r = await api("/api/commit", {kind: "count", lines: rows.map(x => ({id: x.id, counted: x.counted, expected: x.live}))});
+    trackBatch(r.batch, "count", `Count: ${rows.length} change${rows.length === 1 ? "" : "s"}`, rows.map(x => ({id: x.id, n: x.counted})));
+    flash("ok", "", "Sending to WooCommerce…", "");
+  }catch(e){ beep("err"); flash("err", "", "Not sent", e.message); }
+}
+
+/* ---------- lookup ---------- */
+async function showLookup(id, quiet){
+  S.lookupId = id;
+  if (S.mode !== "lookup") return;
+  if (!quiet) renderLookup(null, true);
+  try{
+    const d = await api(`/api/item?id=${id}&live=1`);
+    if (S.lookupId !== id) return;
+    renderLookup(d);
+    if (!quiet){
+      if (d.liveError) flash("dup", "", itemTitle(d), `Couldn't read live stock (${d.liveError}); showing the last known.`);
+      else flash("ok", d.stock ?? "–", itemTitle(d), `${d.stock ?? "No"} in stock in WooCommerce right now`);
+    }
+  }catch(e){ flash("err", "", "Couldn't load that product", e.message); }
+}
+const KIND = {receive: "Received", count: "Counted", adjust: "Adjusted", return: "Returned", note: "Order note", gtin: "Barcode", sku: "SKU"};
+function renderLookup(d, loading){
+  const p = $("#modePanel");
+  if (!S.lookupId){ p.innerHTML = `<div class="panel"><div class="empty">Scan a product, or search: <input type="search" id="lkQ" placeholder="Name or SKU" style="margin-left:6px"></div><div id="lkRes" class="results" hidden></div></div>`; return; }
+  if (!d){ if (loading){ const it = S.items.get(S.lookupId); p.innerHTML = `<div class="panel"><h2>${esc(it ? itemTitle(it) : "…")}</h2><div class="muted">Reading live stock…</div></div>`; } return; }
+  const scopeTag = d.scope === "shop" ? `<span class="tag ok">In-shop</span>` : `<span class="tag dup">${esc(d.why || "Read-only")}</span>`;
+  p.innerHTML = `<div class="panel">
+    <div class="row" style="align-items:flex-start;gap:18px">
+      <div><div class="bigstock">${fmtNum(d.stock)}</div><div class="muted small">in stock${d.live && !d.liveError ? " (live)" : ""}</div></div>
+      <div class="grow"><h2 style="margin:0 0 4px">${esc(d.name)}</h2>${d.attrs ? `<div class="muted">${esc(d.attrs)}</div>` : ""}<div style="margin-top:6px">${scopeTag}</div></div>
+      ${d.sku ? `<div class="qrbox" title="QR of the SKU">${qrSvg(d.sku, 3)}</div>` : ""}
+    </div>
+    <dl class="card-grid" style="margin-top:14px">
+      <dt>SKU</dt><dd class="mono">${esc(d.sku || "none")}</dd>
+      <dt>Barcode</dt><dd class="mono">${esc(d.gtin || "none")}</dd>
+      <dt>Price</dt><dd>${d.price ? "$" + esc(d.price) : "–"}</dd>
+      <dt>WooCommerce id</dt><dd>${d.id}${d.parent ? ` (variation of ${d.parent})` : ""} · ${esc(d.status)}</dd>
+      <dt>Labels printed</dt><dd>${d.labels || 0}</dd>
+    </dl>
+    <div class="row" style="margin-top:12px">
+      ${d.sku ? `<button class="btn" data-lookup-act="label">Add to labels</button>` : `<button class="btn" data-lookup-act="sku">Give it a SKU</button>`}
+      <button class="btn" data-lookup-act="link">${d.gtin ? "Change its barcode" : "Link a barcode"}</button>
+      <button class="btn" data-lookup-act="close">Done</button>
+    </div>
+    <h3>Recent changes</h3>
+    ${d.history.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Change</th><th>Why</th><th>Who</th><th>Result</th></tr></thead><tbody>
+      ${d.history.map(h => `<tr><td class="small">${esc(when(h.at))}</td><td>${esc(KIND[h.kind] || h.kind)}${changeText(h)}</td><td class="small">${h.order_number ? `Order #${esc(h.order_number)} ` : ""}${["Received", "Count"].includes(h.reason) ? "" : esc(h.reason || "")}${h.note ? (["Received", "Count"].includes(h.reason) ? "" : ": ") + esc(h.note) : ""}</td><td class="small">${esc(h.by)}</td><td>${statusTag(h.status)}</td></tr>`).join("")}
+    </tbody></table></div>` : `<div class="empty">No changes from Wojtek Stock yet.</div>`}
+  </div>`;
+}
+$("#modePanel").addEventListener("input", e => {
+  if (e.target.id !== "lkQ") return;
+  const res = $("#lkRes"), found = searchItems(e.target.value, 30);
+  res.hidden = !e.target.value.trim();
+  res.innerHTML = found.map(it => `<button data-lk="${it.id}">${itemCell(it)}</button>`).join("") || `<div class="empty" style="padding:10px">No in-shop product matches.</div>`;
+});
+$("#modePanel").addEventListener("click", e => { const b = e.target.closest("[data-lk]"); if (b){ S.lookupId = +b.dataset.lk; showLookup(S.lookupId); } });
+async function lookupAction(act){
+  const it = S.items.get(S.lookupId);
+  if (act === "close"){ S.lookupId = null; renderLookup(); return focusScan(); }
+  if (!it) return;
+  if (act === "label"){ addLabel(it.id, 1); toast(`Added to the label list: ${itemTitle(it)}`); return focusScan(); }
+  if (act === "sku"){ showTab("labels"); return; }
+  if (act === "link"){
+    const back = await modal({title: `Barcode for ${itemTitle(it)}`, ok: "Save barcode",
+      html: `<p class="small muted">Scan the barcode on the box, or type it (8, 12, 13 or 14 digits).</p><input type="text" id="lkCode" class="mono" style="width:100%" autocomplete="off">`});
+    const code = back ? back.querySelector("#lkCode").value.trim() : "";
+    if (code) await linkTo(it, code);
+    return focusScan();
+  }
+}
+
+/* ---------- returns: scan the order's packing slip, then what came back ---------- */
+async function loadOrder(code){
+  flash("", "", `Looking up order ${code}…`, "");
+  try{
+    const o = (await api("/api/order?code=" + encodeURIComponent(code))).order;
+    S.ret = {order: o, back: {}, note: ""}; S.last = null; S.pendingQty = 0; saveLists();
+    const left = o.lines.reduce((a, l) => a + l.returnable, 0);
+    beep(left ? "ok" : "dup");
+    flash(left ? "ok" : "dup", "", `Order #${o.number}` + (o.customer ? ` · ${o.customer}` : ""),
+          left ? `${o.lines.length} product${o.lines.length === 1 ? "" : "s"} on the order. Scan each item that came back.` : "Everything on this order has already come back or been restocked.");
+  }catch(e){ beep("err"); flash("err", "", e.status === 404 ? `No order ${code}` : "Couldn't look up the order", e.message); }
+  renderMode();
+}
+function retLineFor(v){
+  const o = S.ret.order, ids = new Set(matchCode(v));
+  return o.lines.find(l => ids.has(l.item)) || o.lines.find(l => l.sku && skey(l.sku) === skey(v)) || null;
+}
+function returnScan(v){
+  const o = S.ret.order;
+  if (!o) return loadOrder(v);
+  const line = retLineFor(v);
+  if (line) return gotReturnItem(line);
+  const ids = matchCode(v);
+  if (ids.length){
+    beep("err"); flash("err", "", `${itemTitle(S.items.get(ids[0]))} isn't on order #${o.number}`, "Check the packing slip. Something that wasn't sold on this order goes in with Receive or Adjust.");
+    return;
+  }
+  if (Object.values(S.ret.back).some(b => b.n > 0)){
+    beep("err"); flash("err", "", `Finish order #${o.number} first`, "Press Return, or Clear order, before scanning another order.");
+    return;
+  }
+  return loadOrder(v);
+}
+function gotReturnItem(line){
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", "Returns are logged under the person who scanned them."); return; }
+  const step = S.pendingQty || 1;
+  S.pendingQty = 0;
+  const b = S.ret.back[line.item] || (S.ret.back[line.item] = {n: 0, restock: line.canRestock});
+  if (b.n + step > line.returnable){
+    const already = line.sold - line.returnable;
+    beep("err");
+    flash("err", "", line.returnable ? `Only ${line.returnable} of ${line.name} can come back` : `${line.name} has already come back`,
+          `${line.sold} sold on order #${S.ret.order.number}` + (already ? `, ${already} already back.` : "."));
+    return;
+  }
+  const dup = b.n > 0;
+  b.n += step;
+  S.last = {mode: "return", id: line.item, step};
+  saveLists();
+  beep(dup ? "dup" : "ok");
+  flash(dup ? "dup" : "ok", "+" + step, line.name, `${b.n} of ${line.returnable} back · ` + (b.restock ? "goes back in stock" : "logged, not restocked" + (line.canRestock ? "" : ` (${line.why})`)));
+  renderMode(line.item);
+}
+function returnQty(n){
+  const o = S.ret.order;
+  if (!o){ beep("err"); flash("err", "", "Scan the order first", ""); return; }
+  const line = S.last && S.last.mode === "return" && o.lines.find(l => l.item === S.last.id);
+  if (!line){ S.pendingQty = n; beep("ok"); flash("ok", "×" + n, `The next scan counts ${n}`, "Scan the item now."); return; }
+  const b = S.ret.back[line.item], nv = b.n - S.last.step + n;
+  if (nv > line.returnable){ beep("err"); flash("err", "", `Only ${line.returnable} of ${line.name} can come back`, ""); return; }
+  b.n = nv; S.last.step = n; saveLists();
+  beep("ok"); flash("ok", "+" + n, line.name, `${b.n} of ${line.returnable} back`);
+  renderMode(line.item);
+}
+function renderReturn(flashId){
+  const p = $("#modePanel"), o = S.ret.order;
+  if (!o){ p.innerHTML = `<div class="panel"><div class="empty">Scan the order barcode on the packing slip that came back, or type the order number and press Enter.</div></div>`; return; }
+  const rows = o.lines.map(l => {
+    const b = S.ret.back[l.item] || {n: 0, restock: l.canRestock}, already = l.sold - l.returnable;
+    const how = [l.stockRestocked ? `${l.stockRestocked} restocked here` : "", l.logged ? `${l.logged} logged` : "", l.wooRestocked ? `${l.wooRestocked} by WooCommerce` : ""].filter(Boolean).join(", ");
+    return `<tr data-item="${l.item}" class="${l.item === flashId ? "flashrow" : ""}">
+      <td><div class="item-name">${esc(l.name)}</div><div class="item-sub"><span class="mono">${esc(l.sku || "no SKU")}</span>${l.canRestock ? "" : ` · ${esc(l.why)}`}</div></td>
+      <td class="num">${l.sold}</td>
+      <td class="num">${already ? `${already}<div class="item-sub">${esc(how)}</div>` : "–"}</td>
+      <td class="num">${l.returnable ? `<input class="qty" type="number" min="0" max="${l.returnable}" value="${b.n}" data-retqty aria-label="Back now">` : `<span class="tag ok">All back</span>`}</td>
+      <td>${l.returnable ? `<select data-retcond aria-label="Condition"><option value="1" ${b.restock ? "selected" : ""} ${l.canRestock ? "" : "disabled"}>Back in stock</option><option value="0" ${b.restock ? "" : "selected"}>Damaged: don't restock</option></select>` : ""}</td></tr>`;
+  }).join("");
+  const back = o.lines.map(l => [l, S.ret.back[l.item]]).filter(([, b]) => b && b.n > 0);
+  const n = back.reduce((a, [, b]) => a + b.n, 0), rs = back.reduce((a, [l, b]) => a + (b.restock && l.canRestock ? b.n : 0), 0);
+  const anyLeft = o.lines.some(l => l.returnable > 0);
+  p.innerHTML = `<div class="panel">
+    <div class="row"><h2 class="grow" style="margin:0">Order #${esc(o.number)}</h2><span class="muted small">${esc([o.customer, o.status, when(o.date)].filter(Boolean).join(" · "))}</span></div>
+    ${o.refunds ? `<p class="small muted" style="margin:6px 0 0">This order already has ${o.refunds} refund${o.refunds === 1 ? "" : "s"} in WooCommerce. Anything WooCommerce restocked counts as back already.</p>` : ""}
+    <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Product</th><th class="num">Sold</th><th class="num">Already back</th><th class="num">Back now</th><th>Condition</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="row" style="margin-top:10px"><input id="retNote" type="text" class="grow" placeholder="Note for the order (why it came back, RMA…)" value="${esc(S.ret.note)}"></div>
+    <div class="listfoot"><span class="muted small">${n ? `${n} item${n === 1 ? "" : "s"} back` + (n !== rs ? `, ${rs} to restock` : "") : "Nothing scanned yet"}</span><span class="grow"></span>
+      ${anyLeft ? `<button class="btn" id="retAll">Everything came back</button>` : ""}
+      <button class="btn" id="retClear">Clear order</button>
+      <button class="btn primary" id="retGo" ${n && canWrite() ? "" : "disabled"}>Return ${n} item${n === 1 ? "" : "s"}</button></div>
+    <p class="muted small" style="margin-bottom:0">Wojtek Stock adds a note to the order saying what came back. When you refund it in WooCommerce, leave "Restock refunded items" unticked.</p></div>`;
+}
+$("#modePanel").addEventListener("input", e => {
+  if (S.mode !== "return" || !S.ret.order) return;
+  if (e.target.id === "retNote"){ S.ret.note = e.target.value; saveLists(); return; }
+  if (e.target.hasAttribute("data-retqty")){
+    const id = +e.target.closest("tr").dataset.item, l = S.ret.order.lines.find(x => x.item === id);
+    const b = S.ret.back[id] || (S.ret.back[id] = {n: 0, restock: l.canRestock});
+    b.n = Math.max(0, Math.min(l.returnable, Math.floor(+e.target.value || 0)));
+    saveLists();
+  }
+});
+$("#modePanel").addEventListener("change", e => {
+  if (S.mode !== "return" || !S.ret.order) return;
+  if (e.target.hasAttribute("data-retcond")){
+    const id = +e.target.closest("tr").dataset.item, l = S.ret.order.lines.find(x => x.item === id);
+    const b = S.ret.back[id] || (S.ret.back[id] = {n: 0, restock: l.canRestock});
+    b.restock = e.target.value === "1" && l.canRestock;
+    saveLists(); renderMode(); focusScan();
+  }
+  if (e.target.hasAttribute("data-retqty")){ renderMode(); focusScan(); }
+});
+$("#modePanel").addEventListener("click", async e => {
+  if (S.mode !== "return" || !S.ret.order) return;
+  const id = e.target.id;
+  if (id === "retAll"){
+    if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
+    for (const l of S.ret.order.lines) if (l.returnable) S.ret.back[l.item] = {n: l.returnable, restock: S.ret.back[l.item] ? S.ret.back[l.item].restock : l.canRestock};
+    saveLists(); renderMode(); beep("ok"); flash("ok", "", "Everything on the order is marked back", "Set any damaged items to Damaged, then press Return.");
+    return focusScan();
+  }
+  if (id === "retClear"){
+    if (Object.values(S.ret.back).some(b => b.n > 0) && !await modal({title: "Clear this order?", html: "<p>Takes the order and the items you scanned off the screen. Nothing in WooCommerce changes.</p>", ok: "Clear", danger: true})) return focusScan();
+    S.ret = {order: null, back: {}, note: ""}; S.last = null; saveLists(); renderMode();
+    return focusScan();
+  }
+  if (id === "retGo") return commitReturn();
+});
+async function commitReturn(){
+  const o = S.ret.order;
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
+  const lines = o.lines.map(l => [l, S.ret.back[l.item]]).filter(([, b]) => b && b.n > 0)
+                       .map(([l, b]) => ({item: l.item, qty: b.n, restock: !!(b.restock && l.canRestock)}));
+  if (!lines.length) return;
+  const n = lines.reduce((a, l) => a + l.qty, 0);
+  try{
+    const r = await api("/api/return", {order: o.id, lines, note: S.ret.note.trim()});
+    trackBatch(r.batch, "return", `Return: order #${o.number}, ${n} item${n === 1 ? "" : "s"}`);
+    S.ret = {order: null, back: {}, note: ""}; S.last = null; saveLists(); renderMode();
+    flash("ok", "", "Sending to WooCommerce…", "Restocking, then adding a note to the order.");
+  }catch(e){
+    beep("err"); flash("err", "", "Not returned", e.message);
+    if (e.status === 409) toast("The order changed since it was scanned: scan its barcode again to see where it stands", 7000);
+  }
+  focusScan();
+}
+
+/* ---------- labels ---------- */
+const MM = 25.4;
+function labelSizes(){
+  const w = (S.st?.label.w || 2) * MM, h = (S.st?.label.h || 1) * MM;
+  return [
+    {id: "3x2", name: "2 × 3 in, read wide (3 in across)", w: 76.2, h: 50.8, sideways: true},
+    {id: "2x3", name: "2 × 3 in, upright", w: 50.8, h: 76.2},
+    {id: "2x1", name: "2 × 1 in roll", w: 50.8, h: 25.4},
+    {id: "printer", name: `Label printer setting in stock.env (${S.st?.label.w || 2} × ${S.st?.label.h || 1} in)`, w, h},
+    {id: "2.25x1.25", name: "2.25 × 1.25 in roll", w: 57.15, h: 31.75},
+    {id: "1.5x1", name: "1.5 × 1 in roll", w: 38.1, h: 25.4},
+    {id: "3x1", name: "3 × 1 in roll", w: 76.2, h: 25.4},
+    {id: "2x2", name: "2 × 2 in roll", w: 50.8, h: 50.8},
+    {id: "5160", name: "Avery 5160 sheet (2⅝ × 1 in, 30 a page)", w: 66.675, h: 25.4, sheet: {cols: 3, rows: 10, left: 4.7625, top: 12.7, dx: 69.85, dy: 25.4}},
+    {id: "5163", name: "Avery 5163 sheet (4 × 2 in, 10 a page)", w: 101.6, h: 50.8, sheet: {cols: 2, rows: 5, left: 3.96875, top: 12.7, dx: 106.3625, dy: 50.8}},
+  ];
+}
+S.labels = store.get("labels", []);
+function saveLabels(){ store.set("labels", S.labels); }
+function addLabel(id, copies, quiet){
+  const it = S.items.get(id);
+  if (!it) return;
+  const l = S.labels.find(x => x.id === id);
+  if (l) l.copies += copies; else S.labels.push({id, copies});
+  saveLabels();
+  if (!quiet && S.tab === "labels") renderLabels(id);
+}
+function renderLabels(flashId){
+  const sel = $("#labSize"), cur = store.get("labelSize", "3x2");
+  sel.innerHTML = labelSizes().map(s => `<option value="${s.id}" ${s.id === cur ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+  S.labels = S.labels.filter(l => S.items.has(l.id));
+  const body = $("#labTable tbody");
+  body.innerHTML = S.labels.map(l => { const it = S.items.get(l.id); return `<tr data-id="${l.id}" class="${l.id === flashId ? "flashrow" : ""}">
+    <td><div class="item-name">${esc(it.name)}</div>${it.attrs ? `<div class="item-sub">${esc(it.attrs)}</div>` : ""}</td>
+    <td class="mono">${it.sku ? esc(it.sku) : `<span class="tag err">No SKU</span>`}</td><td class="mono small">${esc(it.gtin || "–")}</td>
+    <td class="num"><input class="qty" type="number" min="1" max="500" value="${l.copies}" aria-label="Copies"></td>
+    <td class="num"><button class="btn sm" data-rm>✕</button></td></tr>`; }).join("");
+  const n = S.labels.reduce((a, l) => a + l.copies, 0), noSku = S.labels.filter(l => !S.items.get(l.id).sku).length;
+  $("#labEmpty").hidden = !!S.labels.length;
+  $("#labCount").textContent = S.labels.length ? `${n} label${n === 1 ? "" : "s"}` + (noSku ? `, ${noSku} product${noSku === 1 ? "" : "s"} skipped (no SKU)` : "") : "";
+  $("#labPdf").disabled = !n;
+  const sz = labelSizes().find(s => s.id === sel.value);
+  $("#labZebra").hidden = $("#labZebraNote").hidden = !S.st?.label.printer;
+  $("#labZebra").disabled = !n || !!(sz && sz.sheet);
+  $("#labZebra").title = sz && sz.sheet ? "Sheets print from the PDF on a regular printer" : "";
+  const o = labelOpts();
+  $("#labName").checked = o.name; $("#labUpc").checked = o.upc;
+  const first = S.labels.map(l => S.items.get(l.id)).find(it => it && it.sku)
+    || {name: "Hornady Critical Defense 9mm Luger 115 gr FTX", attrs: "", sku: "HORN-9MM-115", gtin: "090255000001"};
+  if (sz){
+    const pv = new SvgPage(sz.w, sz.h);
+    drawLabel(pv, first, 0, 0, sz.w, sz.h, o);
+    $("#labPreview").innerHTML = pv.svg(Math.min(4, 230 / Math.max(sz.w, sz.h * 0.75)));
+  }
+  let skip = $("#labSkip");
+  if (sz && sz.sheet && !skip){
+    sel.parentElement.insertAdjacentHTML("afterend", `<label class="small" id="labSkipWrap">Skip <input id="labSkip" type="number" min="0" max="${sz.sheet.cols * sz.sheet.rows - 1}" value="0" style="width:64px"> used labels</label>`);
+  } else if (!(sz && sz.sheet)) $("#labSkipWrap")?.remove();
+}
+$("#labSize").addEventListener("change", e => { store.set("labelSize", e.target.value); renderLabels(); });
+function labelOpts(){ return Object.assign({name: true, upc: false}, store.get("labelOpts", {})); }
+["labName", "labUpc"].forEach(id => $("#" + id).addEventListener("change", () => {
+  store.set("labelOpts", {name: $("#labName").checked, upc: $("#labUpc").checked}); renderLabels();
+}));
+$("#labTable").addEventListener("input", e => {
+  const tr = e.target.closest("tr[data-id]");
+  if (tr){ const l = S.labels.find(x => x.id === +tr.dataset.id); l.copies = Math.max(1, Math.min(500, Math.floor(+e.target.value || 1))); saveLabels(); }
+});
+$("#labTable").addEventListener("change", () => renderLabels());
+$("#labTable").addEventListener("click", e => {
+  if (!e.target.closest("[data-rm]")) return;
+  const id = +e.target.closest("tr").dataset.id;
+  S.labels = S.labels.filter(l => l.id !== id); saveLabels(); renderLabels();
+});
+const labSearch = $("#labSearch"), labRes = $("#labResults");
+labSearch.addEventListener("input", () => {
+  const found = searchItems(labSearch.value, 30);
+  labRes.hidden = !labSearch.value.trim();
+  labRes.innerHTML = found.map(it => `<button data-id="${it.id}">${itemCell(it)}</button>`).join("") || `<div class="empty" style="padding:10px">No in-shop product matches.</div>`;
+});
+labSearch.addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const v = labSearch.value.trim();
+  const ids = matchCode(v);
+  const found = ids.length ? ids.map(i => S.items.get(i)) : searchItems(v, 2);
+  if (found.length === 1){ addLabel(found[0].id, 1); beep("ok"); labSearch.value = ""; labRes.hidden = true; }
+  else beep("err");
+});
+labRes.addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if (b){ addLabel(+b.dataset.id, 1); labSearch.value = ""; labRes.hidden = true; labSearch.focus(); } });
+function addMany(pred, what){
+  const its = [...S.items.values()].filter(it => it.sku && pred(it) && !S.labels.find(l => l.id === it.id));
+  its.forEach(it => S.labels.push({id: it.id, copies: 1}));
+  saveLabels(); renderLabels();
+  toast(its.length ? `Added ${its.length} ${what}` : `No more ${what} to add`);
+}
+$("#labAddNoGtin").addEventListener("click", () => addMany(it => !it.gtin, "products with no barcode"));
+$("#labAddNever").addEventListener("click", () => addMany(it => !it.labels, "products never labeled"));
+$("#labAddAll").addEventListener("click", () => addMany(() => true, "in-shop products"));
+$("#labClear").addEventListener("click", () => { S.labels = []; saveLabels(); renderLabels(); });
+function labelLines(){ return S.labels.filter(l => S.items.get(l.id)?.sku).map(l => ({id: l.id, copies: l.copies})); }
+$("#labPdf").addEventListener("click", async () => {
+  const lines = labelLines();
+  if (!lines.length) return toast("Nothing to print: the products on the list have no SKU");
+  const sz = labelSizes().find(s => s.id === $("#labSize").value);
+  const all = lines.flatMap(l => Array(l.copies).fill(S.items.get(l.id)));
+  const skip = sz.sheet ? Math.max(0, +($("#labSkip")?.value || 0)) : 0;
+  downloadPdf(`labels-${new Date().toISOString().slice(0, 10)}.pdf`, labelsPdf(all, sz, skip, labelOpts()));
+  try{ await api("/api/labels/record", {lines}); loadItems(); }catch(e){}
+});
+$("#labZebra").addEventListener("click", async () => {
+  const lines = labelLines();
+  const sz = labelSizes().find(s => s.id === $("#labSize").value), o = labelOpts();
+  try{ const r = await api("/api/labels/print", {lines, size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}, name: o.name, upc: o.upc}); toast(`Sent ${r.printed} label${r.printed === 1 ? "" : "s"} to the printer`); loadItems(); }
+  catch(e){ toast(e.message, 6000); }
+});
+async function loadNoSku(){
+  const el = $("#noSkuBody");
+  try{
+    const r = await api("/api/nosku");
+    el.classList.remove("muted");
+    if (!r.rows.length){ el.innerHTML = `<div class="empty">Every in-shop product has a SKU.</div>`; return; }
+    el.innerHTML = `<div class="tablewrap" style="max-height:320px;overflow:auto"><table><thead><tr><th><input type="checkbox" id="nsAll" checked aria-label="All"></th><th>Product</th><th class="num">Stock</th></tr></thead><tbody>
+      ${r.rows.map(it => `<tr><td><input type="checkbox" data-ns="${it.id}" checked aria-label="Pick"></td><td>${itemCell(it)}</td><td class="num">${fmtNum(it.stock)}</td></tr>`).join("")}</tbody></table></div>
+      <div class="listfoot"><span class="muted small">New SKUs look like <span class="mono">${esc(S.st?.skuPrefix || "WW-")}000123</span>, continuing after the highest one in use.</span><span class="grow"></span><button class="btn primary" id="nsGo" ${canWrite() ? "" : "disabled"}>Give the ticked products SKUs</button></div>`;
+  }catch(e){ el.textContent = e.message; }
+}
+$("#noSkuBody").addEventListener("change", e => { if (e.target.id === "nsAll") $$("[data-ns]").forEach(c => { c.checked = e.target.checked; }); });
+$("#noSkuBody").addEventListener("click", async e => {
+  if (e.target.id !== "nsGo") return;
+  const ids = $$("[data-ns]").filter(c => c.checked).map(c => +c.dataset.ns);
+  if (!ids.length) return;
+  if (needBadge()) return toast("Scan your badge on the Station first");
+  if (!await modal({title: `Give ${ids.length} product${ids.length === 1 ? "" : "s"} new SKUs?`, ok: "Save SKUs",
+    html: `<p>Each gets the next free SKU (${esc(S.st.skuPrefix)}…), saved to WooCommerce. Products that already have a SKU are never changed.</p>`})) return;
+  try{
+    const r = await api("/api/sku", {ids});
+    trackBatch(r.batch, "sku", `New SKUs for ${ids.length} product${ids.length === 1 ? "" : "s"}`);
+    toast("Saving SKUs… progress is on the Station");
+    setTimeout(() => { loadNoSku(); loadItems(); }, 4000);
+  }catch(err){ toast(err.message, 6000); }
+});
+
+/* ---------- log ---------- */
+let logRows = [];
+async function loadLog(reset){
+  const p = new URLSearchParams({limit: 100});
+  if ($("#logQ").value.trim()) p.set("q", $("#logQ").value.trim());
+  if ($("#logKind").value) p.set("kind", $("#logKind").value);
+  if ($("#logStatus").value) p.set("status", $("#logStatus").value);
+  if ($("#logDay").value) p.set("day", $("#logDay").value);
+  if (!reset && logRows.length) p.set("before", logRows[logRows.length - 1].id);
+  try{
+    const r = await api("/api/log?" + p);
+    logRows = reset ? r.rows : logRows.concat(r.rows);
+    $("#logMore").hidden = !r.more;
+    $("#logTable tbody").innerHTML = logRows.map(j => `<tr><td class="small">${esc(when(j.at))}</td><td>${esc(KIND[j.kind] || j.kind)}</td>
+      <td><div class="item-name">${esc(j.name)}</div><div class="item-sub mono">${esc(j.sku || "")}</div></td>
+      <td class="num">${logChange(j)}</td>
+      <td class="small">${j.order_number ? `Order #${esc(j.order_number)}<br>` : ""}${j.kind === "note" ? "" : esc(j.reason || "")}${j.note && j.kind !== "note" ? `<div class="item-sub">${esc(j.note)}</div>` : ""}</td>
+      <td class="small">${esc(j.by)}</td><td>${statusTag(j.status)}${j.error ? `<div class="item-sub">${esc(j.error)}</div>` : ""}</td>
+      <td>${j.status === "failed" ? `<button class="btn sm" data-retry="${j.id}">Try again</button>` : j.status === "pending" ? `<button class="btn sm" data-cancel="${j.id}">Cancel</button>` : ""}</td></tr>`).join("")
+      || `<tr><td colspan="8" class="empty">No changes match.</td></tr>`;
+  }catch(e){ toast(e.message); }
+}
+function logChange(j){
+  if (j.kind === "note") return j.after ? `<span title="${esc(j.after)}" class="small">Note added</span>` : "";
+  if (j.kind === "gtin" || j.kind === "sku") return esc(j.value || "");
+  if (j.kind === "return" && !j.restock) return `${j.qty} logged<div class="item-sub">damaged</div>`;
+  const ch = j.delta !== null ? (j.delta > 0 ? "+" : "") + j.delta : "= " + j.target;
+  return ch + `<div class="item-sub">${j.before !== null && j.after !== null ? esc(j.before) + " → " + esc(j.after) : ""}</div>`;
+}
+let logT;
+["#logQ", "#logKind", "#logStatus", "#logDay"].forEach(s => $(s).addEventListener("input", () => { clearTimeout(logT); logT = setTimeout(() => loadLog(true), 250); }));
+$("#logMore").addEventListener("click", () => loadLog(false));
+$("#logTable").addEventListener("click", async e => {
+  const r = e.target.closest("[data-retry]"), c = e.target.closest("[data-cancel]");
+  try{
+    if (r){ await api("/api/jobs/retry", {id: +r.dataset.retry}); toast("Trying again"); }
+    if (c){ await api("/api/jobs/cancel", {id: +c.dataset.cancel}); toast("Cancelled"); }
+    if (r || c) setTimeout(() => loadLog(true), 800);
+  }catch(err){ toast(err.message); }
+});
+
+/* ---------- people and terminals ---------- */
+function renderPeople(){
+  const st = S.st;
+  if (!st) return;
+  $("#peopleTable tbody").innerHTML = st.people.map(p => `<tr><td>${esc(p.name)}</td><td><span class="qrbox">${qrSvg("USR-" + p.code, 1.5)}</span> <span class="mono">USR-${esc(p.code)}</span></td>
+    <td class="num">${st.access.canManage ? `<button class="btn sm danger" data-rmp="${esc(p.code)}">Remove</button>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="empty">Nobody yet. Add people below, or import the Locator's people export.</td></tr>`;
+  $("#reqBadge").checked = st.requireBadge;
+  $("#reqBadge").disabled = !st.access.canManage;
+  $("#termPanel").hidden = !st.access.canManage;
+  $("#termTable tbody").innerHTML = (st.terminals || []).map(t => `<tr><td>${esc(t.name)}</td><td class="small">${esc(when(t.created_at))}</td><td class="small">${t.last_seen ? esc(ago(t.last_seen)) + (t.last_ip ? " from " + esc(t.last_ip) : "") : "never"}</td>
+    <td class="num"><button class="btn sm danger" data-rmt="${esc(t.id)}">Revoke</button></td></tr>`).join("") || `<tr><td colspan="4" class="empty">No terminals yet.</td></tr>`;
+}
+$("#pAdd").addEventListener("click", async () => {
+  try{ const r = await api("/api/people", {name: $("#pName").value, code: $("#pCode").value}); toast(`Added ${r.name}: badge USR-${r.code}`); $("#pName").value = $("#pCode").value = ""; loadState(true); }
+  catch(e){ toast(e.message, 5000); }
+});
+$("#pFile").addEventListener("change", async e => { const f = e.target.files[0]; if (f) $("#pCsv").value = await f.text(); });
+$("#pImport").addEventListener("click", async () => {
+  try{ const r = await api("/api/people/import", {csv: $("#pCsv").value}); toast(`Imported ${r.added}${r.skipped ? `, skipped ${r.skipped} (removed or already here)` : ""}`); $("#pCsv").value = ""; loadState(true); }
+  catch(e){ toast(e.message, 5000); }
+});
+$("#peopleTable").addEventListener("click", async e => {
+  const b = e.target.closest("[data-rmp]");
+  if (!b) return;
+  if (!await modal({title: "Remove this person?", html: "<p>Their badge stops working here. Their name stays on everything they did.</p>", ok: "Remove", danger: true})) return;
+  try{ await api("/api/people/remove", {code: b.dataset.rmp}); loadState(true); }catch(err){ toast(err.message); }
+});
+$("#reqBadge").addEventListener("change", async e => { try{ await api("/api/settings", {requireBadge: e.target.checked}); loadState(true); }catch(err){ toast(err.message); e.target.checked = !e.target.checked; } });
+$("#tAdd").addEventListener("click", async () => {
+  try{
+    const r = await api("/api/terminals", {name: $("#tName").value});
+    const url = location.origin + r.path;
+    const box = $("#tLink");
+    box.hidden = false;
+    box.innerHTML = `<div class="row" style="align-items:flex-start"><span class="qrbox">${qrSvg(url, 2.5)}</span><div class="grow"><b>Setup link for ${esc(r.name)}</b>
+      <p class="small">Open it once on that device (or scan this QR with its camera). It's shown only now: if you lose it, revoke the terminal and add it again.</p>
+      <input type="text" readonly value="${esc(url)}" style="width:100%" class="mono" onclick="this.select()"></div></div>`;
+    $("#tName").value = ""; loadState(true);
+  }catch(e){ toast(e.message, 5000); }
+});
+$("#termTable").addEventListener("click", async e => {
+  const b = e.target.closest("[data-rmt]");
+  if (!b) return;
+  if (!await modal({title: "Revoke this terminal?", html: "<p>It stops working at once. You can add it again for a new link.</p>", ok: "Revoke", danger: true})) return;
+  try{ await api("/api/terminals/revoke", {id: b.dataset.rmt}); loadState(true); }catch(err){ toast(err.message); }
+});
+$("#badgesPdf").addEventListener("click", () => {
+  const ppl = S.st.people;
+  if (!ppl.length) return toast("Add people first");
+  downloadPdf("badges.pdf", cardsPdf([...ppl.map(p => [p.name, "USR-" + p.code]), ["Sign out", "CMD-LOGOUT"]]));
+});
+$("#cmdPdf").addEventListener("click", () => downloadPdf("command-sheet.pdf", cardsPdf([["Receive", "CMD-RECEIVE"], ["Count", "CMD-COUNT"], ["Adjust", "CMD-ADJUST"], ["Return", "CMD-RETURN"], ["Lookup", "CMD-LOOKUP"], ["Sign out", "CMD-LOGOUT"]])));
+
+/* ---------- setup ---------- */
+let setupDraft = null;
+async function loadSetup(){
+  renderSetupStatus();
+  try{
+    const s = await api("/api/setup");
+    S.setup = s;
+    if (!setupDraft) setupDraft = {prefixes: new Set(s.uiPrefixes), guns: new Set(s.cats.filter(c => c.gun && !c.env).map(c => c.id))};
+    renderSetup();
+  }catch(e){ toast(e.message); }
+}
+function renderSetupStatus(){
+  const st = S.st;
+  if (!st) return;
+  const sy = st.sync || {};
+  const wm = {on: "<b>Live:</b> changes are sent to WooCommerce.", dryrun: "<b>Dry run:</b> changes are checked and logged, nothing is sent. Set WOO_WRITE=on in stock.env when ready.", off: "<b>Off:</b> changes are refused (WOO_WRITE=off)."}[st.woo.write];
+  $("#wooInfo").innerHTML = `<dl class="card-grid">
+    <dt>Store</dt><dd class="mono">${esc(st.woo.url || "not set")}</dd>
+    <dt>Writes</dt><dd>${wm}</dd>
+    <dt>Last full sync</dt><dd>${esc(when(sy.last_full) || "never")}${sy.products ? ` · ${sy.products} products, ${sy.variations || 0} in-shop variations` : ""}</dd>
+    <dt>Last quick sync</dt><dd>${esc(when(sy.last_quick) || "not yet")} · every ${st.syncMinutes} minutes, plus a full sync nightly</dd>
+    ${sy.running && !st.progress ? `<dt>Now</dt><dd>Syncing (${esc(sy.running)})…</dd>` : ""}
+    ${sy.error ? `<dt>Problem</dt><dd style="color:var(--err)">${esc(sy.error)}</dd>` : ""}
+  </dl>${S.setup && S.setup.http ? `<div class="banner warn small" style="margin-top:10px">The store address starts with http://. WooCommerce only accepts API keys over https://, and keys sent over http can be read on the way.</div>` : ""}`;
+  ["#wooTest", "#syncQuick", "#syncFull", "#setupSave", "#setupConfirm"].forEach(s => { $(s).disabled = !st.access.canManage && /setup|woo/i.test(s); });
+  const pg = st.progress;
+  $("#syncQuick").disabled = $("#syncFull").disabled = !!pg;
+  $("#syncProg").innerHTML = pg ? `<div class="prog" role="status">
+      <div class="row"><b class="grow">${pg.kind === "full" ? "Full sync" : "Quick sync"}: ${esc(pg.phase)}</b><span>${pg.pct !== null ? pg.pct + "%" : ""}</span></div>
+      <div class="bar${pg.pct === null ? " indet" : ""}"><div style="width:${pg.pct ?? 0}%"></div></div>
+      <div class="small muted">${[pg.detail, pg.eta !== null ? `about ${dur(pg.eta)} left` : "", `started ${dur(pg.elapsed)} ago`].filter(Boolean).map(esc).join(" · ")}</div></div>`
+    : (sy.full_secs ? `<p class="small muted" style="margin:10px 0 0">The last full sync took ${esc(dur(sy.full_secs))}.</p>` : "");
+  renderDbx();
+}
+function renderSetup(){
+  const s = S.setup;
+  const f = skey($("#prefFilter").value), small = $("#prefSmall").checked;
+  const all = new Set([...setupDraft.prefixes, ...s.envPrefixes]);
+  const covered = g => [...all].some(p => g.startsWith(p));
+  const rows = s.groups.filter(g => (small || g.count >= 10 || all.has(g.prefix)) && (!f || g.prefix.includes(f) || g.samples.some(x => x.includes(f))));
+  for (const p of setupDraft.prefixes) if (!s.groups.find(g => g.prefix === p)) rows.unshift({prefix: p, count: null, samples: []});
+  $("#prefTable tbody").innerHTML = rows.map(g => {
+    const env = s.envPrefixes.includes(g.prefix), on = all.has(g.prefix), cov = !on && covered(g.prefix);
+    return `<tr><td><input type="checkbox" data-pref="${esc(g.prefix)}" ${on || cov ? "checked" : ""} ${env || cov ? "disabled" : ""} aria-label="Feed"></td>
+      <td class="mono"><b>${esc(g.prefix)}</b>${env ? ` <span class="tag info">stock.env</span>` : ""}${cov ? ` <span class="tag info">covered</span>` : ""}</td>
+      <td class="num">${g.count === null ? "–" : g.count}</td><td class="mono small muted">${g.samples.map(esc).join(", ")}</td></tr>`;
+  }).join("") || `<tr><td colspan="4" class="empty">${s.groupCount ? "No groups match." : "No products yet: wait for the first sync."}</td></tr>`;
+  const chosen = [...all].sort();
+  $("#prefChosen").innerHTML = chosen.length ? `Feed prefixes: <span class="mono"><b>${chosen.map(esc).join(", ")}</b></span>` : `<span style="color:var(--err)">No feed prefixes ticked yet.</span>`;
+  $("#catList").innerHTML = s.cats.length ? s.cats.map(c => `<label class="inline"><input type="checkbox" data-cat="${c.id}" ${c.env || setupDraft.guns.has(c.id) ? "checked" : ""} ${c.env ? "disabled" : ""}> ${esc(c.name)} <span class="muted small">(${c.count})</span>${c.env ? ` <span class="tag info">stock.env</span>` : ""}</label>`).join("") : `<span class="muted">No categories yet.</span>`;
+  const sc = s.scopes;
+  $("#setupSummary").innerHTML = `<p style="margin-top:0">${s.confirmed ? `<span class="tag ok">Unlocked</span> since ${esc(when(s.confirmedAt))}.` : `<span class="tag dup">Locked</span> Changes stay locked until you confirm.`}</p>
+    <dl class="card-grid">
+      <dt>In-shop, can change</dt><dd><b>${sc.shop || 0}</b> products and variations</dd>
+      <dt>In-shop, read-only</dt><dd>${sc.readonly || 0} (stock not tracked in WooCommerce)</dd>
+      <dt>Distributor feed</dt><dd>${sc.feed || 0} (never changed)</dd>
+      <dt>Serialized guns</dt><dd>${sc.gun || 0} (never changed)</dd>
+      <dt>Variable products</dt><dd>${sc.parent || 0} ${s.confirmed ? `(${s.varsLoaded} variations read)` : "(their variations are read after you confirm)"}</dd>
+      <dt>Barcodes</dt><dd>${s.shop.withGtin} of ${s.shop.items} in-shop products have one in WooCommerce · ${s.shop.noSku} have no SKU</dd>
+    </dl><p class="muted small">These counts are as last saved. After you tick or untick, press Save to see them again.</p>`;
+  $("#watchPanel").hidden = !s.watch.length;
+  $("#watchBody").innerHTML = s.watch.length ? `<div class="tablewrap"><table><thead><tr><th>Noticed</th><th>Order</th><th>Product</th><th class="num">Restocked again</th></tr></thead><tbody>
+    ${s.watch.map(w => `<tr><td class="small">${esc(when(w.at))}</td><td>#${esc(w.order_number)}</td><td>${esc(w.name)}</td><td class="num">${w.qty}</td></tr>`).join("")}</tbody></table></div>
+    ${S.st.access.canManage ? `<div class="row" style="margin-top:8px"><button class="btn sm" id="watchClear">I've fixed these: clear the list</button></div>` : ""}` : "";
+  $("#driftBody").innerHTML = s.drift.length ? `<div class="tablewrap" style="max-height:320px;overflow:auto"><table><thead><tr><th>Noticed</th><th>Product</th><th class="num">Was</th><th class="num">Now</th></tr></thead><tbody>
+    ${s.drift.map(d => `<tr><td class="small">${esc(when(d.at))}</td><td>${esc(d.name)}<div class="item-sub mono">${esc(d.sku)}</div></td><td class="num">${d.before}</td><td class="num">${d.after}</td></tr>`).join("")}</tbody></table></div>
+    ${S.st.access.canManage ? `<div class="row" style="margin-top:8px"><button class="btn sm" id="driftClear">Clear the list</button></div>` : ""}` : `<div class="empty">None noticed. Changes from WooCommerce orders and from Wojtek Stock don't show here.</div>`;
+}
+$("#prefFilter").addEventListener("input", () => S.setup && renderSetup());
+$("#prefSmall").addEventListener("change", () => S.setup && renderSetup());
+$("#prefTable").addEventListener("change", e => {
+  const p = e.target.dataset.pref;
+  if (!p) return;
+  if (e.target.checked) setupDraft.prefixes.add(p); else setupDraft.prefixes.delete(p);
+  renderSetup();
+});
+$("#catList").addEventListener("change", e => { const c = +e.target.dataset.cat; if (!c) return; if (e.target.checked) setupDraft.guns.add(c); else setupDraft.guns.delete(c); });
+$("#prefAddBtn").addEventListener("click", () => {
+  const v = skey($("#prefAdd").value);
+  if (!/^[A-Z0-9][A-Z0-9_.\-]{0,11}$/.test(v)) return toast("A prefix is letters and digits (and - _ .), up to 12");
+  setupDraft.prefixes.add(v); $("#prefAdd").value = ""; renderSetup();
+});
+async function saveSetup(confirm){
+  const body = {prefixes: [...setupDraft.prefixes], guns: [...setupDraft.guns], confirm};
+  if (confirm){
+    const all = [...new Set([...body.prefixes, ...S.setup.envPrefixes])].sort();
+    if (!all.length) return toast("Tick at least one feed prefix first");
+    const guns = S.setup.cats.filter(c => c.env || setupDraft.guns.has(c.id)).map(c => c.name);
+    if (!await modal({title: "Unlock changes?", ok: "Unlock",
+      html: `<p>Products whose SKU starts with <b class="mono">${all.map(esc).join(", ")}</b> will never be changed${guns.length ? `, nor anything in <b>${guns.map(esc).join(", ")}</b>` : ""}. Every change is still checked against the live store before it's sent.</p>
+             <p>${S.st.woo.write === "on" ? "Writes are <b>live</b>." : "Writes are in <b>dry run</b>: nothing is sent until WOO_WRITE=on."}</p>`})) return;
+  }
+  try{
+    const r = await api("/api/setup", body);
+    S.setup = r.info; setupDraft = null;
+    toast(confirm ? "Unlocked. Reading the variations of in-shop products now." : "Saved");
+    await loadState(true); loadSetup();
+  }catch(e){ toast(e.message, 5000); }
+}
+$("#setupSave").addEventListener("click", () => saveSetup(false));
+$("#setupConfirm").addEventListener("click", () => saveSetup(true));
+$("#wooTest").addEventListener("click", async () => {
+  const o = $("#wooTestOut");
+  o.textContent = "Testing…";
+  try{ const r = await api("/api/woo/test", {}); o.innerHTML = `<span class="tag ok">Connected</span> ${r.products} products${r.wcVersion ? ` · WooCommerce ${esc(r.wcVersion)}` : ""} · key sent ${r.auth === "query" ? "in the address (the host drops the usual header)" : "in the header"} · ${r.ms} ms`; }
+  catch(e){ o.innerHTML = `<span class="tag err">Failed</span> ${esc(e.message)}`; }
+});
+$("#syncQuick").addEventListener("click", async () => { try{ await api("/api/sync", {}); toast("Syncing…"); setTimeout(() => loadState(true), 1500); }catch(e){ toast(e.message); } });
+$("#syncFull").addEventListener("click", async () => { try{ await api("/api/sync", {full: true}); toast("Full sync started: a few minutes for 20,000+ products"); setTimeout(() => loadState(true), 1500); }catch(e){ toast(e.message); } });
+document.addEventListener("click", async e => {
+  if (e.target.id !== "driftClear" && e.target.id !== "watchClear") return;
+  try{ await api(e.target.id === "driftClear" ? "/api/drift/clear" : "/api/watch/clear", {}); await loadState(true); loadSetup(); }catch(err){ toast(err.message); }
+});
+function renderDbx(){
+  const st = S.st, d = st.backup, el = $("#dbxBody");
+  if (!st.access.canManage){ el.innerHTML = `<p class="muted">${d.connected ? `Connected. Last backup ${esc(ago(d.last_ok))}.` : "Not connected."} Settings need the shop password.</p>`; return; }
+  if (el.contains(document.activeElement)) return;   // don't redraw under someone typing
+  if (d.connected){
+    el.innerHTML = `<dl class="card-grid"><dt>Account</dt><dd>${esc(d.account || "connected")}</dd><dt>Last backup</dt><dd>${d.last_ok ? esc(when(d.last_ok)) + " · " + esc(d.last_folder || "") : "not yet"}</dd>
+      ${d.last_error ? `<dt>Problem</dt><dd style="color:var(--err)">${esc(d.last_error)}</dd>` : ""}</dl>
+      <div class="row" style="margin-top:10px"><label class="small">Folder <input id="dbxFolder" type="text" value="${esc(d.folder || "")}"></label>
+      <label class="small">Every night at <input id="dbxTime" type="text" value="${esc(d.time || "23:45")}" style="width:70px"></label>
+      <label class="small">Keep <input id="dbxKeep" type="number" value="${esc(d.keep_days ?? 90)}" style="width:70px"> days</label>
+      <button class="btn sm" id="dbxSave">Save</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn" id="dbxRun">Back up now</button><button class="btn danger" id="dbxOff">Disconnect</button></div>
+      <p class="muted small">Each night: the change log, the product list, people, settings changes and a copy of the database, in a dated folder.</p>`;
+  } else {
+    el.innerHTML = `<p style="margin-top:0">Nightly backups of the change log, product list, people and database to Dropbox. You can use the same Dropbox app as the Wojtek Locator; backups go to their own folder.</p>
+      <ol class="small"><li>At <a href="https://www.dropbox.com/developers/apps" target="_blank" rel="noopener">dropbox.com/developers/apps</a>, open your app (or create one: Scoped access, App folder) with the permissions files.content.write, files.content.read and files.metadata.read.</li>
+      <li>Paste its app key and app secret here, then open the authorization link and approve.</li><li>Paste the code Dropbox shows, and connect.</li></ol>
+      <div class="row"><input id="dbxKey" type="text" placeholder="App key"><input id="dbxSecret" type="password" placeholder="App secret"><button class="btn sm" id="dbxAuth">Open authorization link</button></div>
+      <div class="row" style="margin-top:8px"><input id="dbxCode" type="text" placeholder="Authorization code" class="grow"><button class="btn primary" id="dbxConnect">Connect</button></div>`;
+  }
+}
+$("#dbxBody").addEventListener("click", async e => {
+  const id = e.target.id;
+  try{
+    if (id === "dbxAuth"){
+      const k = $("#dbxKey").value.trim();
+      if (!k) return toast("Paste the app key first");
+      window.open("https://www.dropbox.com/oauth2/authorize?" + new URLSearchParams({client_id: k, response_type: "code", token_access_type: "offline"}), "_blank", "noopener");
+    }
+    if (id === "dbxConnect"){ await api("/api/backup/connect", {app_key: $("#dbxKey").value, app_secret: $("#dbxSecret").value, code: $("#dbxCode").value}); toast("Dropbox connected"); }
+    if (id === "dbxSave"){ await api("/api/backup/settings", {folder: $("#dbxFolder").value, time: $("#dbxTime").value, keep_days: +$("#dbxKeep").value}); toast("Saved"); }
+    if (id === "dbxRun"){ toast("Backing up…"); await api("/api/backup/run", {}); toast("Backed up"); }
+    if (id === "dbxOff"){ if (!await modal({title: "Disconnect Dropbox?", html: "<p>Nightly backups stop. Backups already in Dropbox stay there.</p>", ok: "Disconnect", danger: true})) return; await api("/api/backup/disconnect", {}); }
+    if (id.startsWith("dbx")){ document.activeElement?.blur(); await loadState(true); renderDbx(); }
+  }catch(err){ toast(err.message, 6000); }
+});
+
+/* ---------- products: search and browse everything in the shop (like the Locator's Inventory tab) ---------- */
+let prodLimit = 200, prodRows = [];
+const PROD_KEYS = ["prodQ", "prodCat", "prodStock", "prodBar", "prodShow", "prodSort"];
+function prodMatches(it, words, g){
+  if (g && gkey(it.gtin) === g) return true;   // a UPC typed or scanned without its leading zeros, or as an EAN-13
+  const hay = skey(`${it.name} ${it.attrs} ${it.sku} ${it.gtin} ${it.cats.join(" ")}`);
+  return words.every(w => hay.includes(w));
+}
+function renderProducts(){
+  const all = [...S.items.values()], sel = $("#prodCat");
+  const cur = sel.options.length ? sel.value : (store.get("prod", {}).prodCat || "");   // the saved choice only before the first draw
+  const counts = new Map();
+  for (const it of all) for (const c of (it.cats.length ? it.cats : ["(no category)"])) counts.set(c, (counts.get(c) || 0) + 1);
+  sel.innerHTML = `<option value="">All categories</option>` + [...counts].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([c, n]) => `<option value="${esc(c)}" ${c === cur ? "selected" : ""}>${esc(c)} (${n})</option>`).join("");
+  const qv = $("#prodQ").value, words = skey(qv).split(" ").filter(Boolean);
+  const digits = qv.replace(/[\s-]/g, ""), g = /^\d{6,14}$/.test(digits) ? gkey(digits) : "";
+  const cat = sel.value, stk = $("#prodStock").value, bar = $("#prodBar").value, show = $("#prodShow").value;
+  const okStock = it => !stk || (it.stock !== null && (stk === "in" ? it.stock > 0 : stk === "low" ? it.stock <= 5 : stk === "out" ? it.stock === 0 : it.stock < 0));
+  prodRows = all.filter(it => (show === "all" || it.scope === show)
+    && (!cat || (cat === "(no category)" ? !it.cats.length : it.cats.includes(cat)))
+    && okStock(it) && (!bar || (bar === "noupc" ? !it.gtin : !it.sku))
+    && (!words.length || prodMatches(it, words, g)));
+  const [key, dir] = $("#prodSort").value.split(":"), d = +dir;
+  const text = it => key === "sku" ? it.sku || "~" : key === "cat" ? (it.cats[0] || "~") : itemTitle(it);
+  prodRows.sort((a, b) => {
+    if (key === "stock" || key === "price"){
+      const x = key === "stock" ? a.stock : parseFloat(a.price), y = key === "stock" ? b.stock : parseFloat(b.price);
+      const nx = x === null || isNaN(x), ny = y === null || isNaN(y);
+      if (nx || ny) return nx - ny;   // no number: last either way
+      if (x !== y) return (x - y) * d;
+    }
+    return text(a).localeCompare(text(b), undefined, {numeric: true, sensitivity: "base"}) * (key === "stock" || key === "price" ? 1 : d);
+  });
+  const shown = prodRows.slice(0, prodLimit);
+  const units = prodRows.reduce((a, it) => a + (it.stock > 0 ? it.stock : 0), 0);
+  $("#prodSummary").textContent = `${prodRows.length.toLocaleString()} of ${all.length.toLocaleString()} products` +
+    (prodRows.length ? ` · ${units.toLocaleString()} units in stock` : "") + (prodRows.length > shown.length ? ` · showing the first ${shown.length}` : "") +
+    (prodRows.length === 1 && qv ? " · press Enter to open it" : "");
+  $("#prodTable tbody").innerHTML = shown.map(it => `<tr data-id="${it.id}">
+      <td><div class="item-name">${esc(it.name)}</div>${it.attrs ? `<div class="item-sub">${esc(it.attrs)}</div>` : ""}${it.scope !== "shop" ? `<div class="item-sub"><span class="tag dup">Read-only</span> ${esc(it.why)}</div>` : ""}</td>
+      <td class="mono small">${esc(it.sku) || `<span class="muted">none</span>`}</td>
+      <td class="mono small">${esc(it.gtin) || `<span class="muted">none</span>`}</td>
+      <td class="small">${esc(it.cats.join(", "))}</td>
+      <td class="num ${it.stock === 0 ? "stock-zero" : it.stock < 0 && it.stock !== null ? "stock-neg" : ""}">${fmtNum(it.stock)}</td>
+      <td class="num small">${it.price ? "$" + esc(it.price) : ""}</td>
+      <td class="num" style="white-space:nowrap">${it.sku ? `<button class="btn sm" data-lab="${it.id}" title="Add to the label list">Label</button>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="empty">${all.length ? "No products match." : "No products yet: wait for the first sync."}</td></tr>`;
+  $("#prodMore").hidden = prodRows.length <= shown.length;
+  store.set("prod", Object.fromEntries(PROD_KEYS.map(k => [k, $("#" + k).value])));
+}
+function openLookup(id){
+  showTab("station");
+  setMode("lookup");
+  S.lookupId = id;
+  showLookup(id);
+}
+(function restoreProd(){
+  const v = store.get("prod", {});
+  for (const k of PROD_KEYS) if (v[k] !== undefined && k !== "prodCat") $("#" + k).value = v[k];
+})();
+let prodT;
+$("#prodQ").addEventListener("input", () => { clearTimeout(prodT); prodT = setTimeout(() => { prodLimit = 200; renderProducts(); }, 120); });
+$("#prodQ").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  clearTimeout(prodT); prodLimit = 200; renderProducts();
+  if (prodRows.length === 1) openLookup(prodRows[0].id);
+});
+["prodCat", "prodStock", "prodBar", "prodShow", "prodSort"].forEach(k => $("#" + k).addEventListener("change", () => { prodLimit = 200; renderProducts(); }));
+$("#prodReset").addEventListener("click", () => {
+  $("#prodQ").value = ""; $("#prodCat").value = ""; $("#prodStock").value = ""; $("#prodBar").value = ""; $("#prodShow").value = "all"; $("#prodSort").value = "name:1";
+  prodLimit = 200; renderProducts(); $("#prodQ").focus();
+});
+$("#prodMore").addEventListener("click", () => { prodLimit += 200; renderProducts(); });
+$("#prodTable").addEventListener("click", e => {
+  const lab = e.target.closest("[data-lab]");
+  if (lab){ addLabel(+lab.dataset.lab, 1); toast(`Added to the label list: ${itemTitle(S.items.get(+lab.dataset.lab))}`); return; }
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) openLookup(+tr.dataset.id);
+});
+document.addEventListener("keydown", e => {   // "/" jumps to the search box, as in the Locator
+  if (e.key !== "/" || S.tab !== "products" || S.modalOpen) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+  e.preventDefault(); $("#prodQ").focus(); $("#prodQ").select();
+});
+
+/* ---------- QR codes (the Locator's encoder): byte mode, error correction M, versions 1-6, up to 106 characters ---------- */
+// Returns a square array of booleans (true = dark), without the quiet zone.
+const QR = (() => {
+  const EXP = new Array(512), LOG = new Array(256);
+  let x = 1;
+  for (let i = 0; i < 255; i++){ EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 256) x ^= 0x11d; }
+  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  const mul = (a, b) => (a && b) ? EXP[LOG[a] + LOG[b]] : 0;
+  function rsGen(n){ let g = [1]; for (let i = 0; i < n; i++){ const ng = new Array(g.length + 1).fill(0);
+      g.forEach((c, j) => { ng[j] ^= c; ng[j + 1] ^= mul(c, EXP[i]); }); g = ng; } return g; }
+  function rsEc(data, n){ const g = rsGen(n), r = data.concat(new Array(n).fill(0));
+    for (let i = 0; i < data.length; i++){ const c = r[i]; if (c) for (let j = 0; j < g.length; j++) r[i + j] ^= mul(g[j], c); }
+    return r.slice(data.length); }
+  // level M: [blocks, data codewords per block, ec codewords per block], alignment centre, byte capacity
+  const SPEC = {1: [1, 16, 10, [], 14], 2: [1, 28, 16, [6, 18], 26], 3: [1, 44, 26, [6, 22], 42],
+                4: [2, 32, 18, [6, 26], 62], 5: [2, 43, 24, [6, 30], 84], 6: [4, 27, 16, [6, 34], 106]};
+  function encode(text){
+    const bytes = [...new TextEncoder().encode(String(text))];
+    const ver = +Object.keys(SPEC).find(v => SPEC[v][4] >= bytes.length);
+    if (!ver) throw new Error("Too long for a QR code (106 characters at most)");
+    const [nb, dpb, epb, align] = SPEC[ver], cap = nb * dpb;
+    // data bits: mode 0100, 8-bit count, bytes, terminator, pad to bytes, pad codewords
+    const bits = [];
+    const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >>> i) & 1); };
+    put(4, 4); put(bytes.length, 8); bytes.forEach(b => put(b, 8));
+    for (let i = 0; i < 4 && bits.length < cap * 8; i++) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) data.push(bits.slice(i, i + 8).reduce((a, b) => a * 2 + b, 0));
+    for (let p = 0; data.length < cap; p++) data.push(p % 2 ? 0x11 : 0xEC);
+    // blocks, then interleave data and ec codewords
+    const blocks = [], ecs = [];
+    for (let b = 0; b < nb; b++){ const d = data.slice(b * dpb, (b + 1) * dpb); blocks.push(d); ecs.push(rsEc(d, epb)); }
+    const seq = [];
+    for (let i = 0; i < dpb; i++) blocks.forEach(d => seq.push(d[i]));
+    for (let i = 0; i < epb; i++) ecs.forEach(e => seq.push(e[i]));
+    const size = 17 + 4 * ver;
+    const mod = Array.from({length: size}, () => new Array(size).fill(false));
+    const fn = Array.from({length: size}, () => new Array(size).fill(false));
+    const set = (r, c, v) => { mod[r][c] = v; fn[r][c] = true; };
+    const finder = (r0, c0) => { for (let r = -1; r <= 7; r++) for (let c = -1; c <= 7; c++){
+        const rr = r0 + r, cc = c0 + c; if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+        const ring = Math.max(Math.abs(r - 3), Math.abs(c - 3));
+        set(rr, cc, r >= 0 && r <= 6 && c >= 0 && c <= 6 && ring !== 2); } };
+    finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+    for (let i = 8; i < size - 8; i++){ set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+    if (align.length) { const a = align[1]; for (let r = -2; r <= 2; r++) for (let c = -2; c <= 2; c++) set(a + r, a + c, Math.max(Math.abs(r), Math.abs(c)) !== 1); }
+    set(size - 8, 8, true);                                  // the dark module
+    for (let i = 0; i < 9; i++){ fn[8][i] = fn[i][8] = true; } // format areas, filled later
+    for (let i = 0; i < 8; i++){ fn[8][size - 1 - i] = fn[size - 1 - i][8] = true; }
+    // place the codewords in the zigzag
+    const all = []; seq.forEach(cw => { for (let i = 7; i >= 0; i--) all.push((cw >> i) & 1); });
+    let k = 0, up = true;
+    for (let col = size - 1; col > 0; col -= 2){
+      if (col === 6) col--;
+      for (let n = 0; n < size; n++){ const r = up ? size - 1 - n : n;
+        for (const c of [col, col - 1]) if (!fn[r][c]){ mod[r][c] = k < all.length ? !!all[k] : false; k++; } }
+      up = !up;
+    }
+    const MASKS = [(r, c) => (r + c) % 2 === 0, r => r % 2 === 0, (r, c) => c % 3 === 0, (r, c) => (r + c) % 3 === 0,
+      (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0, (r, c) => (r * c) % 2 + (r * c) % 3 === 0,
+      (r, c) => ((r * c) % 2 + (r * c) % 3) % 2 === 0, (r, c) => ((r + c) % 2 + (r * c) % 3) % 2 === 0];
+    const formatBits = m => { let d = (0 << 3) | m, v = d << 10;          // level M = 00
+      for (let i = 14; i >= 10; i--) if ((v >> i) & 1) v ^= 0x537 << (i - 10);
+      return ((d << 10) | v) ^ 0x5412; };
+    const withMask = m => {
+      const g = mod.map((row, r) => row.map((v, c) => fn[r][c] ? v : (v !== MASKS[m](r, c))));
+      const f = formatBits(m), bit = i => ((f >> i) & 1) === 1;
+      for (let i = 0; i < 6; i++) g[8][i] = bit(14 - i);
+      g[8][7] = bit(8); g[8][8] = bit(7); g[7][8] = bit(6);
+      for (let i = 9; i < 15; i++) g[14 - i][8] = bit(14 - i);
+      for (let i = 0; i < 8; i++) g[size - 1 - i][8] = bit(14 - i);
+      for (let i = 8; i < 15; i++) g[8][size - 15 + i] = bit(14 - i);
+      g[size - 8][8] = true;
+      return g;
+    };
+    const penalty = g => {     // the standard's four penalty rules, to pick the cleanest mask
+      let p = 0;
+      for (let pass = 0; pass < 2; pass++) for (let i = 0; i < size; i++){
+        let run = 1;
+        for (let j = 1; j < size; j++){ const a = pass ? g[j][i] : g[i][j], b = pass ? g[j - 1][i] : g[i][j - 1];
+          if (a === b){ run++; if (run === 5) p += 3; else if (run > 5) p++; } else run = 1; }
+      }
+      for (let r = 0; r < size - 1; r++) for (let c = 0; c < size - 1; c++){
+        const v = g[r][c]; if (v === g[r][c + 1] && v === g[r + 1][c] && v === g[r + 1][c + 1]) p += 3; }
+      const pat = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0], pat2 = pat.slice().reverse();
+      for (let i = 0; i < size; i++) for (let j = 0; j + 11 <= size; j++)
+        for (const pt of [pat, pat2]){ if (pt.every((b, k) => +g[i][j + k] === b)) p += 40; if (pt.every((b, k) => +g[j + k][i] === b)) p += 40; }
+      const dark = g.flat().filter(Boolean).length;
+      return p + Math.floor(Math.abs(dark * 20 / (size * size) - 10)) * 10;
+    };
+    let best = null;
+    for (let m = 0; m < 8; m++){ const g = withMask(m), s = penalty(g); if (!best || s < best[0]) best = [s, g]; }
+    return best[1];
+  }
+  return {encode};
+})();
+
+function qrSvg(text, px){
+  // a QR code drawn by the page itself, with a 2-module quiet zone; px = size of one module in CSS pixels
+  const g = QR.encode(text), n = g.length, q = 2, size = n + 2 * q;
+  let d = "";
+  g.forEach((row, r) => { let c = 0; while (c < n){ if (!row[c]){ c++; continue; } let e = c; while (e < n && row[e]) e++; d += `M${c + q} ${r + q}h${e - c}v1h-${e - c}z`; c = e; } });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size * px}" height="${size * px}" shape-rendering="crispEdges" style="display:block;background:#fff"><path d="${d}" fill="#000"/></svg>`;
+}
+
+/* ---------- PDFs, built by the page: labels at their exact size, badges and the command sheet ---------- */
+// Helvetica-Bold and Helvetica widths (per 1000 em) for characters 32-126; Courier is 600 throughout
+const HB_W = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,
+  975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,
+  333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+const H_W = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,
+  1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,
+  333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+const PDF_SUBS = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...", "×": "x", "•": "*", "″": '"', "′": "'"};
+const FONTS = {B: ["F1", HB_W], R: ["F2", H_W], M: ["F3", null]};
+function pdfText(str){
+  // a PDF string (WinAnsi): plain ASCII kept, other Latin-1 letters as octal escapes, anything else as "?"
+  let out = "";
+  for (const ch of String(str)){
+    const c = PDF_SUBS[ch] || ch;
+    if (c.length > 1){ out += pdfText(c); continue; }
+    const code = c.charCodeAt(0);
+    if (c === "(" || c === ")" || c === "\\") out += "\\" + c;
+    else if (code >= 32 && code < 127) out += c;
+    else if (code >= 160 && code < 256) out += "\\" + code.toString(8).padStart(3, "0");
+    else out += "?";
+  }
+  return out;
+}
+function textW(str, font, size){   // width in mm
+  const tbl = FONTS[font][1];
+  let w = 0;
+  for (const ch of String(str)){ const c = (PDF_SUBS[ch] || ch).charCodeAt(0); w += tbl ? (c >= 32 && c <= 126 ? tbl[c - 32] : 556) : 600; }
+  return w * size / 1000 * 25.4 / 72;
+}
+function wrap(str, font, size, width, max){
+  // greedy word wrap into at most max lines; anything that doesn't fit ends the last line with "..."
+  const words = String(str).split(/\s+/).filter(Boolean), lines = [];
+  let cur = "", cut = false;
+  for (let i = 0; i < words.length; ){
+    const t = cur ? cur + " " + words[i] : words[i];
+    if (textW(t, font, size) <= width){ cur = t; i++; continue; }
+    if (cur){
+      lines.push(cur); cur = "";
+      if (lines.length === max){ cut = true; break; }
+      continue;   // the same word again, on a new line
+    }
+    let s = words[i];   // one word wider than the line: cut it
+    while (s.length > 1 && textW(s, font, size) > width) s = s.slice(0, -1);
+    lines.push(s); i++; cut = true;
+    if (lines.length === max) break;
+  }
+  if (cur){ if (lines.length < max) lines.push(cur); else cut = true; }
+  if (cut && lines.length){
+    let last = lines[lines.length - 1];
+    while (last.length > 1 && textW(last + "...", font, size) > width) last = last.slice(0, -1);
+    lines[lines.length - 1] = last.replace(/\s+$/, "") + "...";
+  }
+  return lines;
+}
+class PdfPage {
+  constructor(w, h){ this.w = w; this.h = h; this.ops = ["0 g"]; }
+  pt(mm){ return +(mm * 72 / 25.4).toFixed(3); }
+  rect(x, y, w, h){ this.ops.push(`${this.pt(x)} ${this.pt(this.h - y - h)} ${this.pt(w)} ${this.pt(h)} re f`); }
+  cut(x, y, w, h){ this.ops.push(`q 0.6 g 0.4 w [3 2] 0 d ${this.pt(x)} ${this.pt(this.h - y - h)} ${this.pt(w)} ${this.pt(h)} re S Q`); }
+  text(x, y, str, size, font, align){   // y = baseline, mm from the top
+    const left = align === "center" ? x - textW(str, font, size) / 2 : x;
+    this.ops.push(`BT /${FONTS[font][0]} ${size.toFixed(2)} Tf 1 0 0 1 ${this.pt(left)} ${this.pt(this.h - y)} Tm (${pdfText(str)}) Tj ET`);
+  }
+  qr(text, x, y, side){   // side includes a 1-module quiet zone each way; the label's own margin adds more
+    const g = QR.encode(text), n = g.length, m = side / (n + 2);
+    g.forEach((row, r) => { let c = 0; while (c < n){ if (!row[c]){ c++; continue; } let e = c; while (e < n && row[e]) e++;
+      this.rect(x + (c + 1) * m, y + (r + 1) * m, (e - c) * m + 0.01, m + 0.01); c = e; } });
+  }
+}
+function buildPdf(pages){
+  const objs = ["<< /Type /Catalog /Pages 2 0 R >>", null,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>"];
+  const kids = [], pt = mm => +(mm * 72 / 25.4).toFixed(3);
+  for (const p of pages){
+    const ops = p.ops.join("\n") + "\n";
+    objs.push(`<< /Length ${ops.length} >>\nstream\n${ops}endstream`);
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pt(p.w)} ${pt(p.h)}] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents ${objs.length} 0 R >>`);
+    kids.push(`${objs.length} 0 R`);
+  }
+  objs[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${kids.length} >>`;
+  let pdf = "%PDF-1.4\n";
+  const offs = [];
+  objs.forEach((ob, i) => { offs.push(pdf.length); pdf += `${i + 1} 0 obj\n${ob}\nendobj\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map(n => String(n).padStart(10, "0") + " 00000 n \n").join("")
+       + `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return pdf;
+}
+function downloadPdf(name, pdf){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([pdf], {type: "application/pdf"}));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function layoutText(lines, width, maxH){
+  // lines: [text, font, size pt, max lines]; shrinks everything together until it fits in maxH (mm)
+  for (let k = 1; k >= 0.55; k -= 0.05){
+    const out = [];
+    let h = 0;
+    for (const [t, f, size, max] of lines){
+      const s = size * k;
+      for (const ln of wrap(t, f, s, width, max)){ out.push([ln, f, s]); h += s * 1.18 * 25.4 / 72; }
+    }
+    if (h <= maxH || k <= 0.56) return [out, h];
+  }
+}
+const MM_PER_PT = 25.4 / 72;
+function skuSplit(code){   // a long SKU on two lines, broken at the separator nearest its middle (same as the Zebra's)
+  const cuts = [];
+  for (let i = 0; i < code.length - 1; i++) if ("-_./ ".includes(code[i])) cuts.push(i + 1);
+  if (!cuts.length) return [code.slice(0, code.length >> 1), code.slice(code.length >> 1)];
+  const i = cuts.reduce((a, c) => Math.abs(c - code.length / 2) < Math.abs(a - code.length / 2) ? c : a);
+  return [code.slice(0, i), code.slice(i)];
+}
+function skuFit(code, width, room, maxPt){
+  // the SKU as large as fits in width x room (mm): one line, or two when that makes the letters bigger
+  const fit = (s, lines) => Math.min(maxPt, width / textW(s, "B", 1), room / (lines * 1.12 * MM_PER_PT));
+  const one = fit(code, 1);
+  const parts = code.length > 8 ? skuSplit(code) : null;
+  const two = parts ? Math.min(fit(parts[0], 2), fit(parts[1], 2)) : 0;
+  return one >= two * 0.8 ? [[code], one] : [parts, two];
+}
+function wrapAll(str, font, size, width){
+  // every word on as many lines as it takes; a word wider than the line is broken
+  const lines = [];
+  let cur = "";
+  for (let w of String(str).split(/\s+/).filter(Boolean)){
+    while (textW(w, font, size) > width && w.length > 1){
+      let k = w.length;
+      while (k > 1 && textW(w.slice(0, k), font, size) > width) k--;
+      if (cur){ lines.push(cur); cur = ""; }
+      lines.push(w.slice(0, k)); w = w.slice(k);
+    }
+    const t = cur ? cur + " " + w : w;
+    if (textW(t, font, size) <= width) cur = t; else { if (cur) lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function smallBlock(it, o, size, width){
+  // the name (all of it), the variation and, if asked, the UPC, at one size: [[text, font, size]...], height mm
+  const out = [];
+  if (o.name){
+    for (const l of wrapAll(it.name, "R", size, width)) out.push([l, "R", size]);
+    if (it.attrs) for (const l of wrapAll(it.attrs, "R", size * 0.92, width)) out.push([l, "R", size * 0.92]);
+  }
+  if (o.upc && it.gtin) out.push(["UPC " + it.gtin, "R", size * 0.92]);
+  return [out, out.reduce((a, l) => a + l[2] * 1.18 * MM_PER_PT, 0)];
+}
+function fitLabelText(it, o, width, avail, f){
+  // the whole name as large as it can be (f.pref down to f.min) while the SKU keeps at least f.skuMin;
+  // only if that's impossible, the name loses its last lines (ending in ...)
+  let best = null;
+  const skuMin = Math.min(f.skuMin, skuFit(it.sku, width, 1e9, f.skuMax)[1]);   // a long SKU can't grow past the width
+  for (let s = f.pref; s >= f.min - 1e-9; s -= 0.25){
+    const [blk, bh] = smallBlock(it, o, s, width), gap = blk.length ? 1.5 : 0;
+    const [lines, pt] = skuFit(it.sku, width, Math.max(1, avail - bh - gap), f.skuMax);
+    best = {blk, bh, gap, lines, pt};
+    if (pt >= skuMin - 0.01) return best;
+  }
+  const skuH = () => best.lines.length * best.pt * 1.12 * MM_PER_PT;
+  [best.lines, best.pt] = skuFit(it.sku, width, 1e9, skuMin);
+  while (best.blk.length > 1 && best.bh + best.gap + skuH() > avail){
+    const last = best.blk.pop();
+    best.bh -= last[2] * 1.18 * MM_PER_PT;
+    const prev = best.blk[best.blk.length - 1];
+    let t = prev[0];
+    while (t.length > 1 && textW(t + "...", prev[1], prev[2]) > width) t = t.slice(0, -1);
+    prev[0] = t.replace(/\s+$/, "") + "...";
+  }
+  return best;
+}
+function drawLabel(pg, it, x, y, w, h, o){
+  // a QR code of the SKU, the SKU in large letters, then the whole name, the variation and, if asked, the UPC,
+  // sized to fit
+  o = o || {name: true, upc: false};
+  const m = Math.max(1.5, Math.min(3, Math.min(w, h) * 0.06));
+  const L = MM_PER_PT;
+  if (h > w * 1.2){   // upright: QR on top
+    const qs = Math.min(w - 2 * m, h * 0.52);
+    pg.qr(it.sku, x + (w - qs) / 2, y + m * 0.6, qs);
+    const top = y + m * 0.6 + qs + 0.5, avail = y + h - m - top;
+    const t = fitLabelText(it, o, w - 2 * m, avail, {pref: 9, min: 5.5, skuMax: 46, skuMin: h > 60 ? 24 : 12});
+    const skuH = t.lines.length * t.pt * 1.12 * L, total = skuH + t.gap + t.bh;
+    let yy = top + Math.max(0, (avail - total) / 2);
+    for (const ln of t.lines){ yy += t.pt * L; pg.text(x + w / 2, yy, ln, t.pt, "B", "center"); yy += t.pt * 0.12 * L; }
+    yy += t.gap;
+    for (const [s, f, sz] of t.blk){ yy += sz * L; pg.text(x + w / 2, yy, s, sz, f, "center"); yy += sz * 0.18 * L; }
+  } else {            // wide: QR on the left, the text beside it (centred, and roomier, on a label 1.5 in tall or more)
+    const big = h >= 38;
+    const qs = Math.min(h - 2 * m, w * (big ? 0.32 : 0.45));
+    pg.qr(it.sku, x + m * 0.5, y + (h - qs) / 2, qs);
+    const tx = x + m * 0.5 + qs + m * (big ? 1 : 0.6), tw = x + w - m - tx, avail = h - 2 * m;
+    const t = fitLabelText(it, o, tw, avail, big ? {pref: 11.5, min: 6, skuMax: 40, skuMin: 28} : {pref: 7.5, min: 5, skuMax: 30, skuMin: 13});
+    const skuH = t.lines.length * t.pt * 1.12 * L, total = skuH + t.gap + t.bh;
+    const al = big ? "center" : undefined, ax = big ? tx + tw / 2 : tx;
+    let yy = y + Math.max(m, (h - total) / 2);
+    for (const ln of t.lines){ yy += t.pt * L; pg.text(ax, yy, ln, t.pt, "B", al); yy += t.pt * 0.12 * L; }
+    yy += t.gap;
+    for (const [s, f, sz] of t.blk){ yy += sz * L; pg.text(ax, yy, s, sz, f, al); yy += sz * 0.18 * L; }
+  }
+}
+class SvgPage {   // the same drawing calls as PdfPage, as SVG: the label preview on screen
+  constructor(w, h){ this.w = w; this.h = h; this.parts = []; }
+  rect(x, y, w, h){ this.parts.push(`<rect x="${x.toFixed(3)}" y="${y.toFixed(3)}" width="${w.toFixed(3)}" height="${h.toFixed(3)}"/>`); }
+  text(x, y, str, size, font, align){
+    const fam = font === "M" ? "Courier New,Courier,monospace" : "Helvetica,Arial,'Liberation Sans',sans-serif";
+    this.parts.push(`<text x="${x.toFixed(2)}" y="${y.toFixed(2)}" font-family="${fam}" font-weight="${font === "B" ? 700 : 400}" font-size="${(size * MM_PER_PT).toFixed(3)}"${align === "center" ? ' text-anchor="middle"' : ""}>${esc(str)}</text>`);
+  }
+  qr(text, x, y, side){ PdfPage.prototype.qr.call(this, text, x, y, side); }
+  svg(px){ return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${this.w} ${this.h}" width="${this.w * px}" height="${this.h * px}" style="background:#fff;display:block" fill="#000">${this.parts.join("")}</svg>`; }
+}
+function labelsPdf(items, sz, skip, o){
+  const pages = [];
+  if (sz.sheet){
+    const per = sz.sheet.cols * sz.sheet.rows, slots = [...Array(skip || 0).fill(null), ...items];
+    for (let i = 0; i < slots.length; i += per){
+      const pg = new PdfPage(215.9, 279.4);
+      slots.slice(i, i + per).forEach((it, j) => {
+        if (!it) return;
+        drawLabel(pg, it, sz.sheet.left + (j % sz.sheet.cols) * sz.sheet.dx, sz.sheet.top + Math.floor(j / sz.sheet.cols) * sz.sheet.dy, sz.w, sz.h, o);
+      });
+      pages.push(pg);
+    }
+  } else for (const it of items){ const pg = new PdfPage(sz.w, sz.h); drawLabel(pg, it, 0, 0, sz.w, sz.h, o); pages.push(pg); }
+  return buildPdf(pages);
+}
+function cardsPdf(cards){
+  // card-sized (3.375 x 2.125 in), 8 to a letter page with cut lines: the QR on the left, the name beside it
+  const W = 85.725, H = 53.975, L = (215.9 - 2 * W) / 2, T = (279.4 - 4 * H) / 2, pages = [];
+  for (let i = 0; i < cards.length; i += 8){
+    const pg = new PdfPage(215.9, 279.4);
+    cards.slice(i, i + 8).forEach(([name, code], j) => {
+      const x = L + (j % 2) * W, y = T + Math.floor(j / 2) * H;
+      pg.cut(x, y, W, H);
+      const qs = 42;
+      pg.qr(code, x + 4, y + (H - qs) / 2, qs);
+      const [out] = layoutText([[name, "B", 17, 2], [code, "M", 9, 1]], W - qs - 12, H - 10);
+      let yy = y + H / 2 - 6;
+      for (const [t, f, s] of out){ yy += s * 25.4 / 72; pg.text(x + qs + 7, yy, t, s, f); yy += s * 0.3 * 25.4 / 72; }
+    });
+    pages.push(pg);
+  }
+  return buildPdf(pages);
+}
+
+/* ---------- start ---------- */
+(async function init(){
+  S.mode = store.get("mode", "receive");
+  await loadState(true);
+  const op = store.get("op", null);
+  if (op && S.st && S.st.people.find(p => p.code === op.code) && Date.now() - (op.at || 0) < 10 * 60 * 1000){
+    S.op = {code: op.code, name: op.name}; S.lastActivity = op.at;
+  }
+  loadLists();
+  setMode(S.mode);
+  renderOp();
+  showTab(store.get("tab", "station"));
+  (async function poll(){   // every 5 seconds, or every 1.5 while a sync runs so its progress moves smoothly
+    await loadState();
+    setTimeout(poll, S.st && S.st.progress ? 1500 : 5000);
+  })();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(); });
+})();
+</script>
+</body>
+</html>

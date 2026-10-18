@@ -1,0 +1,21 @@
+# Wojtek Stock: the barcode stock station for Wojtek Weaponry's in-shop WooCommerce products.
+# Opens on http://10.42.10.246:8090 on your internal network. Don't forward this port on your router.
+# Its own Compose project, container, network and database: nothing shared with the Wojtek Locator.
+name: wojtek-stock
+services:
+  stock:
+    build: .
+    image: wojtek-stock:v8
+    container_name: wojtek-stock
+    ports:
+      - "8090:8090"          # to listen on one interface only: "10.42.10.246:8090:8090"
+    env_file:
+      - stock.env            # your settings: password, WooCommerce key, feed prefixes...
+    environment:
+      # Fixed for the container, whatever stock.env says.
+      STOCK_DB: /data/stock.db
+      STOCK_HOST: 0.0.0.0
+      STOCK_PORT: "8090"
+    volumes:
+      - ./data:/data         # stock.db lives here; owned by uid 10001 (see README)
+    restart: unless-stopped
