@@ -36,8 +36,23 @@ CATS = {10: ("Ammunition", "ammunition"), 11: ("Accessories", "accessories"), 12
         50: ("Handguns", "handguns"), 51: ("Rifles", "rifles"), 99: ("Distributor", "distributor")}
 P, V, ORDERS = {}, {}, []
 NOTES, REFUNDS = {}, {}
-NEXT = {"order": 5000, "line": 70000, "note": 300000, "refund": 80000}
-FLAGS = {"fail": [], "readonly": False, "query_only": False, "truncate": 0, "requests": 0, "delay": 0}
+NEXT = {"order": 5000, "line": 70000, "note": 300000, "refund": 80000, "product": 3000}
+FLAGS = {"fail": [], "readonly": False, "query_only": False, "truncate": 0, "requests": 0, "delay": 0, "order_reduces": True}
+# a pretend GunBroker, under /gb/v1
+GB = {"listings": {}, "orders": [], "tokens": set(), "puts": [], "next_order": 7700000, "logins": 0}
+
+
+def gb_seed():
+    for gid, sku, qty, fixed, title in ((900001, "ACC-011", 5, True, "Shop accessory 11 on GunBroker"),
+                                        (900002, "WW-TEE-M", 2, True, "Wojtek T-shirt M"),
+                                        (900003, "IRV-10002", 3, True, "A feed item someone listed"),
+                                        (900004, "PA195S201", 1, False, "Glock 19 auction"),
+                                        (900005, "NOPE-1", 4, True, "Something not in the shop")):
+        GB["listings"][gid] = {"itemID": gid, "sku": sku, "quantity": qty, "isFixedPrice": fixed, "title": title,
+                               "fixedPrice": 24.5 if fixed else 0, "buyNowPrice": 0}
+
+
+gb_seed()
 
 
 def cat(i):
@@ -48,7 +63,9 @@ def add(pid, name, sku, stock=5, gtin="", typ="simple", cats=(11,), manage=True,
     P[pid] = {"id": pid, "name": name, "type": typ, "status": status, "sku": sku, "global_unique_id": gtin,
               "stock_quantity": stock if manage else None, "manage_stock": manage,
               "categories": [cat(c) for c in cats], "parent_id": 0, "date_modified_gmt": tick(), "price": "19.99",
-              "variations": []}
+              "regular_price": "19.99", "description": f"<p>{name}, the long description.</p>", "short_description": "",
+              "images": [{"id": 500 + pid % 400, "src": f"https://example.com/img/{pid}.jpg"}], "weight": "0.5",
+              "dimensions": {"length": "1", "width": "1", "height": "1"}, "variations": []}
 
 
 def addvar(pid, vid, opt, sku, stock=3, gtin="", manage=True):
@@ -234,6 +251,8 @@ class H(BaseHTTPRequestHandler):
         with LOCK:
             if path.startswith("/mock/"):
                 return self.mock(path, method, qs)
+            if path.startswith("/gb/v1/"):
+                return self.gunbroker(path[len("/gb/v1"):], method, qs)
             FLAGS["requests"] += 1
             if FLAGS["fail"]:
                 f = FLAGS["fail"][0]
@@ -263,6 +282,21 @@ class H(BaseHTTPRequestHandler):
     def api(self, method, p, qs):
         if p == "/system_status":
             return self.send(200, {"environment": {"version": "10.2.1"}})
+        if p == "/products" and method == "POST":   # a new product
+            b = self.body()
+            if b.get("sku") and sku_taken(b["sku"], 0):
+                return self.send(400, {"code": "product_invalid_sku", "message": "Invalid or duplicated SKU.", "data": {"status": 400}})
+            if b.get("global_unique_id") and gtin_taken(b["global_unique_id"], 0):
+                return self.send(400, {"code": "product_invalid_global_unique_id", "message": "Invalid or duplicated GTIN, UPC, EAN or ISBN."})
+            NEXT["product"] += 1
+            pid = NEXT["product"]
+            cats = [c["id"] for c in b.get("categories") or []]
+            add(pid, b["name"], b.get("sku") or "", int(b.get("stock_quantity") or 0), b.get("global_unique_id") or "",
+                cats=tuple(cats) or (11,), manage=bool(b.get("manage_stock")), status=b.get("status") or "publish")
+            P[pid].update({k: b[k] for k in ("description", "short_description", "regular_price", "weight", "dimensions") if k in b})
+            P[pid]["images"] = [{"id": i["id"], "src": f"https://example.com/media/{i['id']}.jpg"} for i in b.get("images") or []]
+            P[pid]["created_with"] = b
+            return self.send(201, P[pid])
         if p == "/products" and method == "GET":
             if FLAGS["delay"]:   # a slow store, so a test can watch the sync's progress
                 time.sleep(FLAGS["delay"])
@@ -310,11 +344,33 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, rec)
             if method == "PUT":
                 return self.send(*apply_put(rec, self.body()))
+        if p == "/orders" and method == "POST":   # a new order (from GunBroker): lowers stock if FLAGS["order_reduces"]
+            b = self.body()
+            NEXT["order"] += 1
+            oid = NEXT["order"]
+            items = []
+            for li in b.get("line_items") or []:
+                pid, vid = int(li["product_id"]), int(li.get("variation_id") or 0)
+                NEXT["line"] += 1
+                rec = rec_of(pid, vid)
+                items.append({"id": NEXT["line"], "product_id": pid, "variation_id": vid, "quantity": int(li["quantity"]),
+                              "name": P[pid]["name"], "sku": rec["sku"], "total": li.get("total")})
+                if FLAGS["order_reduces"] and rec["manage_stock"] is True:
+                    rec["stock_quantity"] -= int(li["quantity"])
+            t = tick()
+            o = {"id": oid, "number": str(oid), "status": b.get("status", "pending"), "date_created_gmt": t, "date_modified_gmt": t,
+                 "billing": b.get("billing") or {}, "shipping": b.get("shipping") or {}, "line_items": items,
+                 "meta_data": b.get("meta_data") or [], "customer_note": b.get("customer_note", ""), "set_paid": b.get("set_paid")}
+            ORDERS.append(o)
+            return self.send(201, o)
         if p == "/orders" and method == "GET":
             items = ORDERS
             if "modified_after" in qs:
                 ma = qs["modified_after"][0][:19]
                 items = [o for o in items if o["date_modified_gmt"] > ma]
+            if "after" in qs:
+                af = qs["after"][0][:19]
+                items = [o for o in items if o["date_created_gmt"] > af]
             if "search" in qs:
                 t = qs["search"][0]
                 items = [o for o in items if t in str(o["number"]) or t in str(o["id"])]
@@ -335,6 +391,41 @@ class H(BaseHTTPRequestHandler):
                 n = note(o["id"], b["note"])
                 return self.send(201, n)
         return self.send(404, {"code": "rest_no_route", "message": "No route was found."})
+
+    def gunbroker(self, p, method, qs):
+        if self.headers.get("X-DevKey") != "dev-key-1":
+            return self.send(401, {"userMessage": "Invalid developer key"})
+        if p == "/Users/AccessToken" and method == "POST":
+            b = self.body()
+            if (b.get("Username"), b.get("Password")) != ("wojtekgb", "gb-pass"):
+                return self.send(401, {"userMessage": "Invalid username or password"})
+            GB["logins"] += 1
+            t = f"tok-{GB['logins']}"
+            GB["tokens"].add(t)
+            return self.send(200, {"accessToken": t})
+        if self.headers.get("X-AccessToken") not in GB["tokens"]:
+            return self.send(401, {"userMessage": "Access token expired"})
+        if p == "/ItemsSelling" and method == "GET":
+            rows = sorted(GB["listings"].values(), key=lambda x: x["itemID"])
+            return self.send(200, {"count": len(rows), "pageIndex": 1, "pageSize": 300, "results": rows})
+        m = re.fullmatch(r"/Items/(\d+)", p)
+        if m and method == "PUT":
+            b, it = self.body(), GB["listings"].get(int(m.group(1)))
+            if not it:
+                return self.send(404, {"userMessage": "Item not found"})
+            if "Quantity" in b:
+                if int(b["Quantity"]) < 1:
+                    return self.send(400, {"userMessage": "Quantity must be a positive number"})
+                if not it["isFixedPrice"] and int(b["Quantity"]) != 1:
+                    return self.send(400, {"userMessage": "Quantity must be 1 for auctions"})
+                it["quantity"] = int(b["Quantity"])
+            GB["puts"].append((it["itemID"], b))
+            return self.send(200, {"userMessage": "Item updated"})
+        if p == "/OrdersSold" and method == "GET":
+            since = qs.get("OrdersModifiedSinceDate", [""])[0].rstrip("Z")[:19]
+            rows = [o for o in GB["orders"] if o["lastModifiedDate"] > since]
+            return self.send(200, {"count": len(rows), "results": rows})
+        return self.send(404, {"userMessage": "No such route"})
 
     def mock(self, path, method, qs):
         b = self.body() if method == "POST" else {}
@@ -361,6 +452,33 @@ class H(BaseHTTPRequestHandler):
             note(o["id"], "Stock levels increased: " + ", ".join(ch))
             o["date_modified_gmt"] = tick()
             return self.send(200, o)
+        if path == "/mock/gb/sell":   # a GunBroker buyer purchases: listing quantity drops, an order appears
+            it = GB["listings"][int(b["item"])]
+            qty = int(b.get("qty", 1))
+            it["quantity"] -= qty
+            GB["next_order"] += 1
+            o = {"orderID": GB["next_order"], "orderDateUTC": tick(), "lastModifiedDate": tick(), "orderCancelled": False,
+                 "paymentReceived": True, "totalPrice": it["fixedPrice"] * qty + 9.95, "shipCost": 9.95,
+                 "shipToName": "Pat Buyer", "shipToAddress1": "9 Elm St", "shipToCity": "Concord", "shipToState": "NH",
+                 "shipToPostalCode": "03301", "shipToCountryCode": "US", "shipToEmail": "pat@buyer.example",
+                 "orderItemsCollection": [{"itemID": it["itemID"], "sku": it["sku"], "quantity": qty, "itemPrice": it["fixedPrice"],
+                                           "title": it["title"]} for it in [it]] + [
+                     {"itemID": int(x["item"]), "sku": GB["listings"][int(x["item"])]["sku"], "quantity": int(x.get("qty", 1)),
+                      "itemPrice": 10, "title": GB["listings"][int(x["item"])]["title"]} for x in b.get("also", [])]}
+            GB["orders"].append(o)
+            return self.send(200, o)
+        if path == "/mock/gb/cancel":
+            o = next(x for x in GB["orders"] if x["orderID"] == int(b["order"]))
+            o["orderCancelled"] = True
+            o["lastModifiedDate"] = tick()
+            return self.send(200, o)
+        if path == "/mock/gb/expire":
+            GB["tokens"].clear()
+            return self.send(200, {"ok": True})
+        if path == "/mock/gb/state":
+            return self.send(200, {"listings": GB["listings"], "puts": GB["puts"], "logins": GB["logins"], "orders": len(GB["orders"])})
+        if path == "/mock/orders":
+            return self.send(200, ORDERS)
         if path == "/mock/notes":
             return self.send(200, NOTES.get(int(qs["order"][0]), []))
         if path == "/mock/set":    # an edit in wp-admin: modified date moves
@@ -381,7 +499,7 @@ class H(BaseHTTPRequestHandler):
             FLAGS["fail"] += [{"status": b["status"], "method": b.get("method")} for _ in range(int(b.get("count", 1)))]
             return self.send(200, {"ok": True})
         if path == "/mock/flags":
-            for k in ("readonly", "query_only", "truncate", "delay"):
+            for k in ("readonly", "query_only", "truncate", "delay", "order_reduces"):
                 if k in b:
                     FLAGS[k] = b[k]
             return self.send(200, {k: FLAGS[k] for k in ("readonly", "query_only", "truncate", "requests", "delay")})

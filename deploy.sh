@@ -51,7 +51,10 @@ if has_github && [ -z "$FORCE" ]; then
   LAST="$(git describe --tags --abbrev=0 2>/dev/null || true)"
   if [ -n "$LAST" ] && [ -n "$(git log --format=%h "$LAST"..HEAD)" ]; then
     THEIRS="$(git diff --name-only "$LAST" HEAD)"
-    UNDONE="$(git diff --name-only HEAD -- $THEIRS 2>/dev/null || true)"
+    UNDONE=""
+    if [ -n "$THEIRS" ]; then   # nothing changed on GitHub (an empty merge): nothing to protect, and an empty list
+      UNDONE="$(git diff --name-only HEAD -- $THEIRS 2>/dev/null || true)"   # here would compare every file
+    fi
     if [ -n "$UNDONE" ]; then
       git checkout -q -- . && git clean -fdq
       echo "== Stopped: these files were changed on GitHub since $LAST, and this zip would change them:"

@@ -64,6 +64,14 @@ check "deployed" 'grep -q "v11 is running" "$T/out"'
 check "their change kept" 'grep -q "their change" "$HOME/wojtek-stock/stock.env.example"'
 check "on GitHub with its tag" 'git -C "$T/github.git" tag | grep -qx v11'
 
+echo "6. GitHub gets a change that touches no files (a merge with nothing in it)"
+( cd "$T/them" && git pull -q origin main && git commit -q --allow-empty -m "Merge with no file changes" && git push -q origin main )
+"$HOME/wojtek-stock/deploy.sh" pull > "$T/out" 2>&1
+mkzip v12 'echo "# their change" >> stock.env.example; echo "# v12" >> README.md' 20
+"$HOME/wojtek-stock/deploy.sh" "$HOME/wojtek-stock-v12.zip" > "$T/out" 2>&1; rc=$?
+check "a zip after an empty change deploys (nothing to protect)" '[ $rc -eq 0 ] && grep -q "v12 is running" "$T/out"'
+check "zips are never committed" '! git -C "$T/github.git" ls-tree -r --name-only main | grep -q "\.zip$"'
+
 echo
 echo "$pass passed, $fail failed"
 [ $fail -eq 0 ]

@@ -1,1 +1,1 @@
-v8: on GitHub (deploy.sh, .gitignore, GITHUB.md, run-tests.sh, as with the Locator); refuses to start without STOCK_PASSWORD; the station finds a product by the last 3 to 6 characters of its barcode or SKU
+v12: fixes from the Locator's notes: deploy.sh no longer stops a zip when GitHub's changes touched no files; GITHUB.md sends SSH over port 443 (port 22 is blocked here); zips kept out of git; a Print a test label button and clearer printer errors; a preview of what the Zebra prints, used by the tests

@@ -18,12 +18,14 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-MOCK_PORT, STOCK_PORT, PRINTER_PORT = 9311, 8091, 9312
+MOCK_PORT, STOCK_PORT, PRINTER_PORT, SMTP_PORT = 9311, 8091, 9312, 9325
 TMP = tempfile.mkdtemp(prefix="wstock-test-")
 DB = os.path.join(TMP, "stock.db")
 PASSED, FAILED = [], []
 procs = {}
 printed = []
+mails = []                      # what the pretend mail server received: {"from", "to", "data"}
+SMTP_AUTH = {"user": "wojtek", "token": "tok-123"}
 
 
 def check(name, cond, detail=""):
@@ -86,7 +88,10 @@ def start_server(write="dryrun", extra_env=None):
     envv = dict(os.environ, STOCK_PORT=str(STOCK_PORT), STOCK_DB=DB, STOCK_PASSWORD="test-pass",
                 WOO_URL=f"http://127.0.0.1:{MOCK_PORT}", WOO_KEY="ck_test", WOO_SECRET="cs_test", WOO_WRITE=write,
                 WOO_MIN_GAP="0", SYNC_MINUTES="60", FULL_SYNC_TIME="03:15", SHOP_TZ="America/New_York",
-                LABEL_PRINTER=f"127.0.0.1:{PRINTER_PORT}", LABEL_WIDTH_IN="2", LABEL_LENGTH_IN="1")
+                LABEL_PRINTER=f"127.0.0.1:{PRINTER_PORT}", LABEL_WIDTH_IN="2", LABEL_LENGTH_IN="1",
+                SMTP_HOST="127.0.0.1", SMTP_PORT=str(SMTP_PORT), SMTP_USER="wojtek", SMTP_TOKEN="tok-123",
+                SMTP_FROM="orders@wojtek.example", SHOP_EMAIL="shop@wojtek.example", PO_EMAIL_CC="nate@wojtek.example",
+                SHOP_ADDRESS="1 Main St|Manchester, NH", AUTO_PO_TIME="23:59")
     envv.update(extra_env or {})
     log = open(os.path.join(TMP, "server.log"), "a")
     procs["server"] = subprocess.Popen([sys.executable, os.path.join(ROOT, "server.py")], env=envv, stdout=log, stderr=log)
@@ -152,11 +157,81 @@ def printer():
         c.close()
 
 
+def smtp_server():
+    """A pretend mail server: plain SMTP with AUTH PLAIN/LOGIN (no TLS), keeps every message in `mails`."""
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", SMTP_PORT))
+    srv.listen(5)
+
+    def handle(c):
+        f = c.makefile("rb")
+        say = lambda s: c.sendall((s + "\r\n").encode())
+        say("220 pretend ESMTP")
+        msg = {"to": []}
+        while True:
+            line = f.readline().decode(errors="replace").rstrip("\r\n")
+            if not line:
+                break
+            cmd = line.upper()
+            if cmd.startswith("EHLO") or cmd.startswith("HELO"):
+                c.sendall(b"250-pretend\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
+            elif cmd.startswith("AUTH PLAIN"):
+                parts = line.split()
+                raw = parts[2] if len(parts) > 2 else (say("334 ") or f.readline().decode().strip())
+                _, u, p = base64.b64decode(raw).decode().split("\0")
+                say("235 ok" if (u, p) == (SMTP_AUTH["user"], SMTP_AUTH["token"]) else "535 bad credentials")
+            elif cmd.startswith("MAIL FROM"):
+                msg = {"from": line[10:], "to": []}
+                say("250 ok")
+            elif cmd.startswith("RCPT TO"):
+                msg["to"].append(line[8:].strip("<> "))
+                say("250 ok")
+            elif cmd == "DATA":
+                say("354 go on")
+                data = b""
+                while True:
+                    l2 = f.readline()
+                    if l2 in (b".\r\n", b".\n", b""):
+                        break
+                    data += l2
+                msg["data"] = data
+                mails.append(msg)
+                say("250 queued")
+            elif cmd == "QUIT":
+                say("221 bye")
+                break
+            else:
+                say("250 ok")
+        c.close()
+    while True:
+        conn_, _ = srv.accept()
+        threading.Thread(target=handle, args=(conn_,), daemon=True).start()
+
+
+def pdf_qr(data):
+    """The QR codes in a PDF (bytes), via pdftoppm and OpenCV's two QR readers."""
+    import cv2
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "x.pdf")
+    open(p, "wb").write(data)
+    subprocess.run(["pdftoppm", "-r", "200", "-png", p, os.path.join(d, "pg")], check=True)
+    out = []
+    for f in sorted(os.listdir(d)):
+        if f.endswith(".png"):
+            img = cv2.imread(os.path.join(d, f))
+            t = cv2.QRCodeDetector().detectAndDecode(img)[0] or cv2.QRCodeDetectorAruco().detectAndDecode(img)[0]
+            if t:
+                out.append(t)
+    return out
+
+
 def main():
     log = open(os.path.join(TMP, "mock.log"), "w")
     procs["mock"] = subprocess.Popen([sys.executable, os.path.join(HERE, "mock_woo.py"), str(MOCK_PORT)], stdout=log, stderr=log)
     assert wait_port(MOCK_PORT)
     threading.Thread(target=printer, daemon=True).start()
+    threading.Thread(target=smtp_server, daemon=True).start()
     try:
         run()
     finally:
@@ -409,6 +484,27 @@ def run():
     z = "".join(printed)
     check("Zebra gets ZPL with QR of the SKU", code == 200 and z.count("^XA") == 3 and "^FDMA,HORN-9MM-115^FS" in z, (code, r, z[:300]))
     check("label shows the variation", "Size: M" in z)
+    n0 = len(printed)
+    code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 3, "h": 2, "sideways": True}})
+    time.sleep(1)
+    tz = printed[-1] if len(printed) > n0 else ""
+    check("Print a test label", code == 200 and "TEST-LABEL" in tz and "^GB" in tz and "^PW406^LL609" in tz, (code, r, tz[:120]))
+    try:
+        sys.path.insert(0, HERE)
+        import zpl_preview
+        bad = []
+        os.environ.setdefault("STOCK_DB", os.path.join(TMP, "preview.db"))
+        srv = sys.modules.get("stock_server") or (zpl_preview._qr("x") and sys.modules["stock_server"])
+        names = ["Hornady 9mm 115gr FTX", "Magpul PMAG 30 AR/M4 GEN M3 Window 5.56x45 NATO / .223 Remington 30-Round Polymer Magazine, Black",
+                 "X", "Super Long Name " * 8]
+        for sku in ("HORN-9MM-115", "WW-TEE-S", "A", "VERYLONGSKUWITHNOBREAKS123456"):
+            for nm in names:
+                for w_, l_, sw in ((3, 2, True), (2, 3, False), (2, 1, False)):
+                    _, probs = zpl_preview.render(srv.zpl_label({"sku": sku, "name": nm, "attrs": "Size: L", "gtin": "012345678905"}, w_, l_, True, True, sw))
+                    bad += [f"{sku}/{w_}x{l_}: {p}" for p in probs]
+        check("Zebra labels: nothing runs over, whatever the SKU and name", not bad, bad[:5])
+    except ImportError:
+        print("  (skipped the Zebra preview check: Pillow isn't installed here)")
     code, r, _ = api("POST", "/api/labels/print", {"lines": [{"id": 2301, "copies": 1}, {"id": 2201}]})
     check("labels need a SKU first", code == 400 or code == 200, (code, r))
     api("POST", "/api/commit", {"kind": "adjust", "dir": "down", "reason": "Other", "note": "=HYPERLINK(\"x\")",
@@ -517,6 +613,257 @@ def run():
     check("variations step shown", any(p["phase"] == "Reading variations" for p in seen), {p["phase"] for p in seen})
     check("progress cleared when done", wait_sync("last_full", last) and state()["progress"] is None)
     check("full sync time remembered", (state()["sync"].get("full_secs") or 0) >= 2, state()["sync"])
+
+    print("17b. Purchasing")
+    code, r, _ = api("POST", "/api/vendors", {"name": "Orion", "email": "orders@orion.example", "feed_prefix": "ori", "lead_days": 5}, op="ANA")
+    check("vendor added", code == 200 and r["feed_prefix"] == "ORI", (code, r))
+    orion = r["id"]
+    code, r, _ = api("POST", "/api/vendors", {"name": "orion"}, op="ANA")
+    check("duplicate vendor name refused", code == 409)
+    code, r, _ = api("POST", "/api/vendors", {"name": "Bad", "email": "nope"}, op="ANA")
+    check("bad email refused", code == 400)
+    irvine = api("POST", "/api/vendors", {"name": "Irvine", "feed_prefix": "IRV"}, op="ANA")[1]["id"]
+    code, r, _ = api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 1000, "qty": 1}]}, op="ANA")
+    check("feed product can't go on a PO", code == 409, r)
+    code, r, _ = api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2401, "qty": 1}]}, op="ANA")
+    check("gun can't go on a PO", code == 409, r)
+    code, r, _ = api("POST", "/api/po", {"vendor_id": orion, "notes": "Rush", "lines": [
+        {"item_id": 2003, "qty": 8, "cost": 4, "vendor_sku": "ORI-MUG"}, {"item_id": 2105, "qty": 5, "cost": 2}]}, op="ANA")
+    check("draft PO created", code == 200 and r["po"]["number"] == "PO-0001" and r["po"]["status"] == "draft" and r["po"]["total"] == 42, (code, r))
+    po = r["po"]
+    code, r, _ = api("POST", "/api/po", {"id": po["id"], "vendor_id": orion, "lines": [
+        {"item_id": 2003, "qty": 10, "cost": 4, "vendor_sku": "ORI-MUG"}, {"item_id": 2105, "qty": 5, "cost": 2}]}, op="ANA")
+    check("draft can be changed", code == 200 and r["po"]["total"] == 50 and r["po"]["number"] == "PO-0001", r)
+    code, r, _ = api("POST", "/api/po/receive", {"id": po["id"], "lines": [{"line_id": 1, "qty": 1}]}, op="ANA")
+    check("a draft can't be received", code == 409, r)
+    code, r, _ = api("POST", "/api/po/action", {"id": po["id"], "action": "send"}, op="ANA")
+    check("PO sent", code == 200 and r["po"]["status"] == "sent" and r["po"]["sent_at"], r)
+    code, r, _ = api("POST", "/api/po", {"id": po["id"], "vendor_id": orion, "lines": []}, op="ANA")
+    check("a sent PO can't be changed", code == 409)
+    for c in ("PO-0001", "po-1", "PO1"):
+        code, r, _ = api("GET", "/api/po?number=" + c)
+        check(f"PO found by {c!r}", code == 200 and r["po"]["id"] == po["id"], (code, r))
+    lines = {l["item_id"]: l for l in r["po"]["lines"]}
+    mug0, acc0 = mock("/mock/get?pid=2003")["stock_quantity"], mock("/mock/get?pid=2105")["stock_quantity"]
+    code, r, _ = api("POST", "/api/po/receive", {"id": po["id"], "freight": 10, "fees": 2, "invoice": "INV-77", "lines": [
+        {"line_id": lines[2003]["id"], "qty": 6}, {"line_id": lines[2105]["id"], "qty": 5}]}, op="ANA")
+    check("partial receipt accepted", code == 200, (code, r))
+    jobs = wait_batch(r["batch"])
+    check("stock goes up", all(j["status"] == "done" for j in jobs) and mock("/mock/get?pid=2003")["stock_quantity"] == mug0 + 6
+          and mock("/mock/get?pid=2105")["stock_quantity"] == acc0 + 5, jobs)
+    p = api("GET", f"/api/po?id={po['id']}")[1]["po"]
+    ln = {l["item_id"]: l for l in p["lines"]}
+    check("PO partly received, 4 backordered", p["status"] == "partial" and ln[2003]["received"] == 6 and ln[2003]["open"] == 4 and ln[2105]["open"] == 0, p)
+    rl = {x["item_id"]: x for x in p["receipts"][0]["lines"]}
+    check("freight and fees spread by value (landed cost)", abs(rl[2003]["landed_unit"] - (4 + 12 * 24 / 34 / 6)) < 0.001
+          and abs(rl[2105]["landed_unit"] - (2 + 12 * 10 / 34 / 5)) < 0.001, rl)
+    log = api("GET", "/api/log?limit=2")[1]["rows"]
+    check("log says which PO", all(x["reason"] == "Received on PO-0001" and x["note"] == "Invoice INV-77" for x in log), log)
+    code, r, _ = api("POST", "/api/po/receive", {"id": po["id"], "lines": [{"line_id": lines[2003]["id"], "qty": 5}]}, op="ANA")
+    check("can't receive more than is due", code == 409 and "Only 4" in r["error"], r)
+    code, r, _ = api("POST", "/api/po/receive", {"id": po["id"], "lines": [{"line_id": lines[2003]["id"], "qty": 4}],
+                                                 "extras": [{"item_id": 2106, "qty": 2, "cost": 3}]}, op="ANA")
+    wait_batch(r["batch"])
+    p = api("GET", f"/api/po?id={po['id']}")[1]["po"]
+    check("the rest arrives: PO received", p["status"] == "received" and p["open"] == 0, p)
+    check("an extra item becomes an extra line", any(l["item_id"] == 2106 and l["extra"] == 1 and l["received"] == 2 for l in p["lines"]))
+    c = api("GET", "/api/item?id=2003")[1]["costs"]
+    check("item costs: last and average landed", c["lastCost"] == 4 and abs(c["avgCost"] - (6 * (4 + 12 * 24 / 34 / 6) + 4 * 4) / 10) < 0.001 and c["received"] == 10, c)
+    check("vendor part number and price remembered", any(v["name"] == "Orion" and v["vendor_sku"] == "ORI-MUG" and v["last_cost"] == 4 for v in c["vendors"]), c)
+    p2 = api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2107, "qty": 3, "cost": 1.5}]}, op="ANA")[1]["po"]
+    api("POST", "/api/po/action", {"id": p2["id"], "action": "send"}, op="ANA")
+    check("on order shows on the item", api("GET", "/api/item?id=2107")[1]["costs"]["onOrder"] == 3)
+    r = api("POST", "/api/po/receive", {"id": p2["id"], "lines": [{"line_id": p2["lines"][0]["id"], "qty": 1}]}, op="ANA")[1]
+    wait_batch(r["batch"])
+    code, r, _ = api("POST", "/api/po/action", {"id": p2["id"], "action": "cancel"}, op="ANA")
+    check("a PO with receipts can't be cancelled", code == 409)
+    code, r, _ = api("POST", "/api/po/action", {"id": p2["id"], "action": "close"}, op="ANA")
+    check("closing cancels the backorder", code == 200 and r["po"]["status"] == "closed" and r["po"]["open"] == 0 and r["po"]["lines"][0]["cancelled"] == 2, r)
+    check("nothing on order after closing", api("GET", "/api/item?id=2107")[1]["costs"]["onOrder"] == 0)
+    p3 = api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2107, "qty": 1}]}, op="ANA")[1]["po"]
+    code, r, _ = api("POST", "/api/po/action", {"id": p3["id"], "action": "cancel"}, op="ANA")
+    check("a draft can be cancelled", code == 200 and r["po"]["status"] == "cancelled")
+    api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2107, "qty": 1}]}, op="ANA")   # an open draft
+    code, r, _ = api("POST", "/api/vendors/remove", {"id": orion}, op="ANA")
+    check("vendor with open POs can't be removed", code == 409, (code, r))
+    check("open PO list", all(x["status"] in ("draft", "sent", "partial") for x in api("GET", "/api/pos?status=open")[1]["pos"]))
+
+    print("17c. Feed listings")
+    r = api("GET", "/api/feed/search?q=irvine%20item%200")[1]["rows"]
+    check("feed search finds listings", any(x["id"] == 1000 and x["vendor"] == "Irvine" for x in r), [x["sku"] for x in r][:5])
+    feed_before = mock("/mock/get?pid=1000")
+    code, r, _ = api("POST", "/api/feed/copy", {"feed_id": 1000, "sku_mode": "custom", "sku": "ORI-COPY"}, op="ANA")
+    check("custom SKU that looks like a feed refused", code == 409, r)
+    code, r, _ = api("POST", "/api/feed/copy", {"feed_id": 1000, "sku_mode": "custom", "sku": "HORN-9MM-115"}, op="ANA")
+    check("custom SKU already used refused", code == 409, r)
+    code, r, _ = api("POST", "/api/feed/copy", {"feed_id": 1000, "sku_mode": "generate", "status": "draft"}, op="ANA")
+    check("copied to a new in-shop product", code == 200 and r["item"]["scope"] == "shop" and r["item"]["sku"].startswith("WW-") and r["vendor"] == "Irvine", (code, r))
+    nid = r["item"]["id"]
+    new = mock(f"/mock/get?pid={nid}")
+    check("copy has the name, description, same images, price, stock 0", new["name"] == feed_before["name"] and "long description" in new["description"]
+          and [i["id"] for i in new["images"]] == [i["id"] for i in feed_before["images"]] and new["stock_quantity"] == 0
+          and new["manage_stock"] is True and new["status"] == "draft" and new["regular_price"] == feed_before["regular_price"], new)
+    check("the feed listing is untouched", mock("/mock/get?pid=1000") == feed_before)
+    res = api("GET", "/api/resolve?code=800000000000")[1]["matches"]
+    check("the listing's UPC scans to the new product", res and res[0]["id"] == nid, res)
+    check("station has the extra barcode", items()[nid][12] == ["800000000000"], items().get(nid))
+    code, r, _ = api("POST", "/api/feed/copy", {"feed_id": 1000, "sku_mode": "generate"}, op="ANA")
+    check("can't copy the same listing twice", code == 409)
+    code, r, _ = api("POST", "/api/feed/link", {"feed_id": 1001, "item_id": 2104}, op="ANA")
+    check("linked to a part I have", code == 200 and r["altBarcode"] == "800000000001", r)
+    res = api("GET", "/api/resolve?code=800000000001")[1]["matches"]
+    check("linked listing's UPC scans to my part", res and res[0]["id"] == 2104, res)
+    c = api("GET", "/api/item?id=2104")[1]["costs"]
+    check("its vendor and part number remembered", any(v["name"] == "Irvine" and v["vendor_sku"] == "IRV-10001" for v in c["vendors"]), c)
+    code, r, _ = api("POST", "/api/link", {"id": 2107, "code": "800000000001"}, op="ANA")
+    check("an extra barcode counts as taken", code == 409, r)
+
+    print("17d. Reorder points and email")
+    import email as _email
+    code, r, _ = api("POST", "/api/vendors", {"id": orion, "name": "Orion", "email": "orders@orion.example", "feed_prefix": "ORI",
+                                               "lead_days": 5, "auto_send": True}, op="ANA")
+    check("vendor set to send by itself", code == 200 and r["auto_send"] == 1, r)
+    code, r, _ = api("POST", "/api/vendors", {"id": irvine, "name": "Irvine", "feed_prefix": "IRV", "auto_send": True}, op="ANA")
+    check("sending by itself needs an email", code == 400, r)
+    code, r, _ = api("POST", "/api/reorder/set", {"rows": [{"item_id": 2108, "min": 5, "max": 5}]}, op="ANA")
+    check("order-up-to must be above the reorder point", code == 400, r)
+    code, r, _ = api("POST", "/api/reorder/set", {"rows": [{"item_id": 1000, "min": 1, "max": 5}]}, op="ANA")
+    check("no reorder point on a feed product", code == 409, r)
+    code, r, _ = api("POST", "/api/reorder/set", {"rows": [{"item_id": 2108, "min": 5, "max": 12, "vendor_id": orion},
+                                                           {"item_id": 2109, "min": 2, "max": 6}]}, op="ANA")
+    check("reorder points saved", code == 200 and r["saved"] == 2, r)
+    rows = {x["item_id"]: x for x in api("GET", "/api/reorder")[1]["rows"]}
+    s2108 = mock("/mock/get?pid=2108")["stock_quantity"]
+    check("a part at its reorder point needs ordering up to its level", rows[2108]["need"] == 12 - s2108 and rows[2108]["vendor"] == "Orion", rows[2108])
+    r = api("POST", "/api/reorder/run", {}, op="ANA")[1]
+    check("drafted automatically", len(r["drafted"]) == 1 and "Shop accessory 9" in r["noVendor"], r)
+    auto_no = list(r["drafted"])[0]
+    po = api("GET", "/api/po?number=" + auto_no)[1]["po"]
+    check("the automatic draft", po["status"] == "draft" and po["auto"] == 1 and po["lines"][0]["item_id"] == 2108 and po["lines"][0]["qty"] == 12 - s2108, po)
+    r = api("POST", "/api/reorder/run", {}, op="ANA")[1]
+    check("never drafted twice", r["drafted"] == {}, r)
+    rows = {x["item_id"]: x for x in api("GET", "/api/reorder")[1]["rows"]}
+    check("what's on the draft counts as coming", rows[2108]["coming"] == 12 - s2108 and rows[2108]["need"] == 0, rows[2108])
+    code, raw, hd = api("GET", f"/api/po/pdf?id={po['id']}")
+    check("PO as a PDF from the server", code == 200 and raw[:5] == b"%PDF-" and pdf_qr(raw) == [auto_no], (code, raw[:20]))
+    n0 = len(mails)
+    code, r, _ = api("POST", "/api/po/email", {"id": po["id"]}, op="ANA")
+    check("PO emailed and marked sent", code == 200 and r["po"]["status"] == "sent" and r["po"]["emailed_to"] == "orders@orion.example", (code, r))
+    m = mails[-1] if len(mails) > n0 else {"to": [], "data": b""}
+    msg = _email.message_from_bytes(m["data"])
+    att = [p for p in msg.walk() if p.get_content_type() == "application/pdf"]
+    check("to the vendor, a copy to you, reply to the shop", set(m["to"]) == {"orders@orion.example", "nate@wojtek.example"}
+          and msg["Reply-To"] == "shop@wojtek.example" and auto_no in msg["Subject"], (m["to"], msg["Subject"], msg["Reply-To"]))
+    check("the PDF attached, its QR the PO number", att and att[0].get_filename() == f"{auto_no}.pdf" and pdf_qr(att[0].get_payload(decode=True)) == [auto_no])
+    body = [p for p in msg.walk() if p.get_content_type() == "text/plain"][0].get_payload(decode=True).decode()
+    check("the email lists the parts", "Shop accessory 8" in body and auto_no in body, body[:300])
+    p4 = api("POST", "/api/po", {"vendor_id": irvine, "lines": [{"item_id": 2110, "qty": 1}]}, op="ANA")[1]["po"]
+    code, r, _ = api("POST", "/api/po/email", {"id": p4["id"]}, op="ANA")
+    check("a vendor without email can't be emailed", code == 400 and "no email" in r["error"], r)
+    p5 = api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2110, "qty": 2}]}, op="ANA")[1]["po"]
+    SMTP_AUTH["token"] = "changed"
+    code, r, _ = api("POST", "/api/po/email", {"id": p5["id"]}, op="ANA")
+    SMTP_AUTH["token"] = "tok-123"
+    p5 = api("GET", f"/api/po?id={p5['id']}")[1]["po"]
+    check("a refused login is reported, and the PO stays a draft", code == 502 and "token" in r["error"] and p5["status"] == "draft" and p5["email_error"], (code, r, p5["status"]))
+    code, r, _ = api("POST", "/api/email/test", {"to": "someone@wojtek.example"})
+    check("test email", code == 200 and mails[-1]["to"] == ["someone@wojtek.example"], (code, r))
+    r = api("POST", "/api/reorder/suggest", {"days": 90})[1]
+    sug = {x["item_id"]: x for x in r["rows"]}
+    check("reorder levels suggested from sales", 2100 in sug and sug[2100]["min"] >= 1 and sug[2100]["max"] > sug[2100]["min"], r["rows"][:3])
+    api("POST", "/api/reorder/set", {"rows": [{"item_id": 2111, "min": 50, "max": 60, "vendor_id": orion}]}, op="ANA")
+    n0 = len(mails)
+    start_server("on", {"AUTO_PO_TIME": "00:00", "PURCHASING_CHECK_SECONDS": "1"})
+    check("at the set time, the automatic draft is emailed by itself", wait_for(lambda: len(mails) > n0, 30), len(mails))
+    sent = [x for x in api("GET", "/api/pos")[1]["pos"] if x["auto"] == 1 and x["status"] == "sent"]
+    check("and marked sent", any(any(l["item_id"] == 2111 for l in api("GET", f"/api/po?id={x['id']}")[1]["po"]["lines"]) for x in sent))
+    check("manual drafts are never sent by themselves", api("GET", f"/api/po?id={p5['id']}")[1]["po"]["status"] == "draft")
+    start_server("on")
+
+    print("17e. GunBroker")
+    gbenv = {"GB_DEVKEY": "dev-key-1", "GB_USERNAME": "wojtekgb", "GB_PASSWORD": "gb-pass",
+             "GB_API_URL": f"http://127.0.0.1:{MOCK_PORT}/gb/v1", "GB_MINUTES": "60"}
+
+    def gbsync():
+        for _ in range(30):
+            code, r, _ = api("POST", "/api/gb/sync", {})
+            if code != 409:
+                return code, r
+            time.sleep(1)
+        return code, r
+    start_server("on", dict(gbenv, GB_SYNC="dryrun"))
+    code, r = gbsync()
+    check("dry run reads the listings", code == 200 and r["listings"] == 5, (code, r))
+    L = {x["gb_id"]: x for x in api("GET", "/api/gb")[1]["listings"]}
+    check("linked to in-shop products by SKU", L[900001]["item_id"] == 2111 and L[900002]["item_id"] == 2502, L)
+    check("a feed listing is never linked", L[900003]["item_id"] is None and "feed" in L[900003]["why"].lower(), L[900003])
+    check("a gun is never linked", L[900004]["item_id"] is None and "gun" in L[900004]["why"].lower(), L[900004])
+    check("an unknown SKU says so", L[900005]["item_id"] is None and "No in-shop" in L[900005]["why"], L[900005])
+    s2111 = stock(2111)
+    check("dry run works out the quantity", L[900001]["want"] == s2111, (L[900001], s2111))
+    check("dry run changes nothing on GunBroker", mock("/mock/gb/state")["listings"]["900001"]["quantity"] == 5)
+    mock("/mock/gb/sell", {"item": 900001, "qty": 1})
+    gbsync()
+    o = api("GET", "/api/gb")[1]["orders"][0]
+    check("dry run: the sale is shown, nothing brought in", o["status"] == "dry run" and stock(2111) == s2111 and "Would bring in 1" in o["detail"], o)
+    n_woo_orders = len(mock("/mock/orders"))
+
+    start_server("on", dict(gbenv, GB_SYNC="on", GB_BUFFER="1"))
+    gbsync()
+    st = mock("/mock/gb/state")["listings"]
+    check("live: quantity set to stock less the buffer", st["900001"]["quantity"] == stock(2111) - 1 and st["900002"]["quantity"] == stock(2500, 2502) - 1,
+          (st["900001"], stock(2111), st["900002"]))
+    check("unlinked listings are left alone", st["900003"]["quantity"] == 3 and st["900005"]["quantity"] == 4)
+    check("the dry-run sale isn't brought in later", len(mock("/mock/orders")) == n_woo_orders)
+    mock("/mock/set_quiet", {"pid": 2500, "vid": 2502, "fields": {"stock_quantity": 1}})
+    gbsync()
+    L = {x["gb_id"]: x for x in api("GET", "/api/gb")[1]["listings"]}
+    check("sold out here: flagged when GunBroker won't go to 0", "end it on GunBroker" in (L[900002]["error"] or ""), L[900002])
+    check("the problem shows in the header state", state()["gb"]["attention"] >= 1)
+
+    before = stock(2111)
+    mock("/mock/gb/sell", {"item": 900001, "qty": 2})
+    gbsync()
+    o = api("GET", "/api/gb")[1]["orders"][0]
+    wo = mock("/mock/orders")[-1]
+    check("a GunBroker sale becomes a WooCommerce order", o["status"] == "imported" and o["woo_number"] == wo["number"]
+          and any(m["key"] == "_gunbroker_order_id" and m["value"] == str(o["gb_order_id"]) for m in wo["meta_data"]), (o, wo["meta_data"]))
+    check("with the items, address and no buyer email", wo["line_items"][0]["product_id"] == 2111 and wo["line_items"][0]["quantity"] == 2
+          and wo["shipping"]["city"] == "Concord" and "email" not in wo["billing"] and wo["customer_note"].startswith("GunBroker order"), wo)
+    check("stock lowered once (by WooCommerce)", stock(2111) == before - 2 and "by WooCommerce" in o["detail"], (stock(2111), before, o["detail"]))
+    mock("/mock/flags", {"order_reduces": False})
+    before = stock(2111)
+    mock("/mock/gb/sell", {"item": 900001, "qty": 1})
+    gbsync()
+    check("stock lowered once (by Wojtek Stock, when WooCommerce didn't)", wait_for(lambda: stock(2111) == before - 1, 20), (stock(2111), before))
+    o = api("GET", "/api/gb")[1]["orders"][0]
+    check("and says so", "by Wojtek Stock" in o["detail"], o)
+    check("logged as a GunBroker sale", any(x["kind"] == "sale" and "GunBroker" in x["reason"] for x in api("GET", "/api/log?limit=5")[1]["rows"]))
+    mock("/mock/flags", {"order_reduces": True})
+    n_gb, n_wo = len(api("GET", "/api/gb")[1]["orders"]), len(mock("/mock/orders"))
+    gbsync()
+    check("nothing brought in twice", len(api("GET", "/api/gb")[1]["orders"]) == n_gb and len(mock("/mock/orders")) == n_wo)
+    mock("/mock/gb/sell", {"item": 900005, "qty": 1})
+    gbsync()
+    o = api("GET", "/api/gb")[1]["orders"][0]
+    check("an order with nothing linked is skipped", o["status"] == "skipped" and len(mock("/mock/orders")) == n_wo, o)
+    mock("/mock/gb/sell", {"item": 900001, "qty": 1, "also": [{"item": 900005, "qty": 1}]})
+    gbsync()
+    o = api("GET", "/api/gb")[1]["orders"][0]
+    check("a mixed order brings in the linked part, notes the rest", o["status"] == "imported" and "not linked" in o["detail"]
+          and len(mock("/mock/orders")[-1]["line_items"]) == 1, o)
+    first = [x for x in api("GET", "/api/gb")[1]["orders"] if x["status"] == "imported"][-1]
+    mock("/mock/gb/cancel", {"order": first["gb_order_id"]})
+    gbsync()
+    c = [x for x in api("GET", "/api/gb")[1]["orders"] if x["gb_order_id"] == first["gb_order_id"]][0]
+    check("cancelled on GunBroker after import is flagged", c["status"] == "cancelled after import", c)
+    logins = mock("/mock/gb/state")["logins"]
+    mock("/mock/gb/expire", {})
+    code, r = gbsync()
+    check("an expired token: logs in again", code == 200 and mock("/mock/gb/state")["logins"] == logins + 1, (code, r))
+    code, r, _ = api("GET", "/api/order?code=" + first["woo_number"])
+    check("a GunBroker sale can come back through Return mode", code == 200 and any(l["item"] == 2111 for l in r["order"]["lines"]), (code, r))
+    start_server("on")
 
     print("18. Restart keeps everything")
     start_server("on")

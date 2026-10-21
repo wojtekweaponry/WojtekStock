@@ -32,19 +32,13 @@ cat ~/.ssh/github_wojtek_stock.pub
 Copy the line it prints. On GitHub, in the WojtekStock repository: **Settings → Deploy keys → Add deploy key**. Paste
 it, name it "wojtek-stock server", tick **Allow write access**, and add it.
 
-**4. Tell SSH to use that key for this repository.** The Locator already has its own key for `github.com`, and a deploy
+**4. Tell SSH to use that key for this repository.** It goes over port 443 (`ssh.github.com`), because the shop's
+network blocks outgoing SSH on its usual port 22; GitHub answers SSH on 443 for exactly this. The Locator already has its own key for `github.com`, and a deploy
 key only opens its own repository, so Wojtek Stock gets its own name for GitHub, `github-wojtek-stock`. This leaves the
 Locator's setup exactly as it is.
 
 ```bash
-cat >> ~/.ssh/config <<'END'
-
-Host github-wojtek-stock
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/github_wojtek_stock
-    IdentitiesOnly yes
-END
+printf '\nHost github-wojtek-stock\n    HostName ssh.github.com\n    Port 443\n    User git\n    IdentityFile ~/.ssh/github_wojtek_stock\n    IdentitiesOnly yes\n' >> ~/.ssh/config && chmod 600 ~/.ssh/config
 ssh -T git@github-wojtek-stock
 ```
 

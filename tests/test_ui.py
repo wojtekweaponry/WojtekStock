@@ -18,7 +18,7 @@ os.makedirs(SHOTS, exist_ok=True)
 
 
 def decode_pdf_qrs(path):
-    import cv2
+    import cv2  # two readers: the classic one occasionally misses a valid code that the second finds
     out = []
     prefix = path[:-4]
     subprocess.run(["pdftoppm", "-r", "300", "-png", path, prefix], check=True)
@@ -26,8 +26,11 @@ def decode_pdf_qrs(path):
     for f in sorted(x for x in os.listdir(os.path.dirname(path)) if x.startswith(os.path.basename(prefix)) and x.endswith(".png")):
         img = cv2.imread(os.path.join(os.path.dirname(path), f))
         ok, texts, _, _ = det.detectAndDecodeMulti(img)
-        if ok:
-            out += [t for t in texts if t]
+        found = [t for t in texts if t] if ok else []
+        if not found:
+            ok, texts, _, _ = cv2.QRCodeDetectorAruco().detectAndDecodeMulti(img)
+            found = [t for t in texts if t] if ok else []
+        out += found
     return out
 
 
@@ -36,7 +39,8 @@ def S_tab(page):
 
 
 def run_ui():
-    T.start_server("on")
+    T.start_server("on", {"GB_DEVKEY": "dev-key-1", "GB_USERNAME": "wojtekgb", "GB_PASSWORD": "gb-pass", "GB_SYNC": "dryrun",
+                          "GB_API_URL": f"http://127.0.0.1:{T.MOCK_PORT}/gb/v1", "GB_MINUTES": "60"})
     T.check("server up and first sync", T.wait_sync())
     T.api("POST", "/api/setup", {"prefixes": ["IRV", "ORI", "CSSI"], "guns": [50, 51], "confirm": True})
     T.wait_for(lambda: T.api("GET", "/api/setup")[1]["varsLoaded"] > 0, 60)
@@ -185,6 +189,129 @@ def run_ui():
         T.mock("/mock/refund", {"order": o["id"], "lines": [{"pid": 2002, "qty": 2}], "restock": True})
         T.api("POST", "/api/sync", {})
         T.check("double restock banner appears", T.wait_for(lambda: "possible double restock" in page.inner_text("#banners"), 30), page.inner_text("#banners"))
+        # ---- purchasing
+        page.click("nav button[data-tab=purchasing]")
+        page.click("#vNew")
+        page.fill("#vf-name", "Orion Supply")
+        page.fill("#vf-email", "orders@orion.example")
+        page.fill("#vf-feed_prefix", "ORI")
+        page.click(".modal button[data-v='1']")
+        page.wait_for_selector("#vTable tbody tr[data-v]")
+        T.check("vendor added", "Orion Supply" in page.inner_text("#vTable"))
+        page.click("#poNew")
+        page.wait_for_selector("#pdAdd")
+        for sku in ("ACC-007", "ACC-008"):
+            page.fill("#pdAdd", sku)
+            page.press("#pdAdd", "Enter")
+            page.wait_for_timeout(400)
+        page.fill("#pdTable tr[data-i='0'] input[data-f='qty']", "5")
+        page.fill("#pdTable tr[data-i='0'] input[data-f='cost']", "3.00")
+        page.fill("#pdTable tr[data-i='0'] input[data-f='vendor_sku']", "ORI-ACC7")
+        page.fill("#pdTable tr[data-i='1'] input[data-f='qty']", "2")
+        page.fill("#pdTable tr[data-i='1'] input[data-f='cost']", "10")
+        T.check("PO total adds up", page.inner_text("#pdTotal") == "$35.00", page.inner_text("#pdTotal"))
+        page.fill("#pdNotes", "Ship ground please")
+        page.screenshot(path=f"{SHOTS}/06d-po-draft.png", full_page=True)
+        page.click("[data-po-act='send']")
+        page.wait_for_selector(".modal")
+        page.click(".modal button[data-v='1']")
+        page.wait_for_selector("[data-po-act='receive']")
+        T.check("PO marked sent", "Sent" in page.inner_text("#poPanel"))
+        po_no = page.inner_text("#poPanel h2").split(" ")[0]
+        with page.expect_download() as dl:
+            page.click("[data-po-act='pdf']")
+        pp = os.path.join(SHOTS, "po.pdf")
+        dl.value.save_as(pp)
+        T.check("PO PDF's QR is its number", decode_pdf_qrs(pp) == [po_no], (po_no, decode_pdf_qrs(pp)))
+        txt = subprocess.run(["pdftotext", "-layout", pp, "-"], capture_output=True, text=True).stdout
+        T.check("PO PDF has vendor, parts and total", all(x in txt for x in ("Orion Supply", "ORI-ACC7", "ACC-008", "$35.00", "Ship ground please", po_no)), txt[:600])
+        subprocess.run(["pdftoppm", "-r", "70", "-png", "-f", "1", "-l", "1", pp, os.path.join(SHOTS, "po-page")])
+        page.click("nav button[data-tab=station]")
+        st7, st8, st9 = (T.mock(f"/mock/get?pid={p}")["stock_quantity"] for p in (2107, 2108, 2109))
+        scan(po_no)
+        page.wait_for_selector("#prGo")
+        T.check("scanning the PO's barcode opens it for receiving", f"Receiving {po_no}" in page.inner_text("#modePanel") and "7 units still due" in flash(), flash())
+        scan("ACC-007")
+        scan("ACC-007")
+        scan("+3")
+        T.check("+3 after a scan", page.input_value("tr[data-pl] input[data-plq]") == "4", page.input_value("tr[data-pl] input[data-plq]"))
+        scan("ACC-007")
+        scan("ACC-007")
+        T.check("more than is due is refused", last_beep() == "err" and "Only 5" in flash(), flash())
+        scan("ACC-009")
+        page.wait_for_selector(".modal")
+        page.fill("#exQty", "2")
+        page.fill("#exCost", "1.50")
+        page.click(".modal button[data-v='1']")
+        page.wait_for_timeout(300)
+        page.fill("#prFreight", "7")
+        page.fill("#prInv", "INV-900")
+        page.press("#prInv", "Tab")
+        page.wait_for_timeout(200)
+        page.screenshot(path=f"{SHOTS}/06e-po-receive.png", full_page=True)
+        T.check("typing in the receipt fields isn't lost", page.input_value("#prInv") == "INV-900" and page.input_value("#prFreight") == "7")
+        page.click("#prGo")
+        T.check("PO receipt saved", T.wait_for(lambda: "Saved in WooCommerce" in flash(), 30), flash())
+        T.check("stock up for what arrived", T.mock("/mock/get?pid=2107")["stock_quantity"] == st7 + 5 and T.mock("/mock/get?pid=2108")["stock_quantity"] == st8
+                and T.mock("/mock/get?pid=2109")["stock_quantity"] == st9 + 2)
+        pos = T.api("GET", "/api/pos?status=open")[1]["pos"]
+        mine = next(x for x in pos if x["number"] == po_no)
+        T.check("PO partly received, ACC-008 still due", mine["status"] == "partial" and mine["open"] == 2, mine)
+        rc = T.api("GET", f"/api/po?id={mine['id']}")[1]["po"]["receipts"][0]
+        T.check("invoice and freight recorded", rc["invoice"] == "INV-900" and rc["freight"] == 7, rc)
+        scan("CMD-LOOKUP")
+        scan("ACC-007")
+        page.wait_for_selector(".bigstock")
+        page.wait_for_timeout(400)
+        T.check("Lookup shows landed cost and vendor", "$4.17" in page.inner_text("#modePanel") and "Orion Supply" in page.inner_text("#modePanel"), page.inner_text("#modePanel")[:500])
+        page.screenshot(path=f"{SHOTS}/06f-lookup-costs.png", full_page=True)
+        page.click("nav button[data-tab=purchasing]")
+        if page.is_visible("[data-po-act='back']"):
+            page.click("[data-po-act='back']")
+        page.fill("#feedQ", "Orion feed item 7")
+        page.wait_for_selector("#feedTable [data-fcopy]")
+        page.click("#feedTable [data-fcopy]")
+        page.wait_for_selector("#fcName")
+        page.select_option("#fcStatus", "draft")
+        page.click(".modal button[data-v='1']")
+        T.check("feed listing copied", T.wait_for(lambda: page.query_selector("#feedTable .tag.ok"), 15), page.inner_text("#feedTable"))
+        page.screenshot(path=f"{SHOTS}/06g-feed.png", full_page=True)
+        # ---- reorder points and email (v10)
+        page.click("nav button[data-tab=station]")
+        scan("CMD-LOOKUP")
+        scan("ACC-010")
+        page.wait_for_selector("[data-lookup-act='reorder']")
+        page.click("[data-lookup-act='reorder']")
+        page.wait_for_selector("#roMin")
+        page.fill("#roMin", "5")
+        page.fill("#roMax", "9")
+        page.select_option("#roVen", label="Orion Supply")
+        page.click(".modal button[data-v='1']")
+        T.check("reorder point shows on the Lookup card", T.wait_for(lambda: "at 5, up to 9 from Orion Supply" in page.inner_text("#modePanel"), 10), page.inner_text("#modePanel")[:400])
+        page.click("nav button[data-tab=purchasing]")
+        if page.is_visible("[data-po-act='back']"):
+            page.click("[data-po-act='back']")
+        page.wait_for_selector("#roTable tr[data-ro='2110']")
+        need = page.inner_text("#roTable tr[data-ro='2110'] td:last-child").strip()
+        T.check("the part needs ordering, up to its level", need == str(9 - T.mock("/mock/get?pid=2110")["stock_quantity"]), need)
+        page.click("#roRun")
+        T.check("Draft POs now makes the automatic draft", T.wait_for(lambda: page.query_selector("#poTable .tag.info"), 10))
+        page.screenshot(path=f"{SHOTS}/06h-reorder.png", full_page=True)
+        page.click("#poTable tr:has(.tag.info)")
+        page.wait_for_selector("[data-po-act='email']")
+        T.check("Email button ready", page.is_enabled("[data-po-act='email']") and "Drafted automatically" in page.inner_text("#poPanel"))
+        n0 = len(T.mails)
+        page.click("[data-po-act='email']")
+        page.wait_for_selector(".modal")
+        T.check("confirm names the vendor's address", "orders@orion.example" in page.inner_text(".modal"))
+        page.click(".modal button[data-v='1']")
+        T.check("emailed from the page", T.wait_for(lambda: len(T.mails) > n0 and "emailed to orders@orion.example" in page.inner_text("#poPanel"), 20), page.inner_text("#poPanel")[:300])
+        page.screenshot(path=f"{SHOTS}/06i-po-emailed.png", full_page=True)
+        page.click("[data-po-act='back']")
+        page.click("nav button[data-tab=setup]")
+        page.wait_for_selector("#emTest")
+        T.check("Setup shows email is set up", "Set up" in page.inner_text("#emailBody") and "orders@wojtek.example" in page.inner_text("#emailBody"))
+        page.click("nav button[data-tab=station]")
         scan("CMD-LOOKUP")
         scan("HORN-9MM-115")
         page.wait_for_selector(".bigstock")
@@ -210,7 +337,7 @@ def run_ui():
         page.fill("#prodQ", "")
         page.select_option("#prodCat", "Ammunition")
         page.wait_for_timeout(200)
-        T.check("category picker", rows() == [2001], rows())
+        T.check("category picker", set(rows()) == {2001, 3001}, rows())   # 3001: the ammunition listing copied from the feed above
         page.select_option("#prodCat", "")
         page.select_option("#prodBar", "noupc")
         page.wait_for_timeout(200)
@@ -266,6 +393,7 @@ def run_ui():
         dl.value.save_as(pdf2)
         T.check("Avery sheet labels decode too", sorted(decode_pdf_qrs(pdf2)) == ["HORN-9MM-115", "SIG-P365-MAG10", "WW-TEE-S"])
         T.check("Zebra button off for sheets", page.is_disabled("#labZebra"))
+        T.check("test label off for sheets too", page.is_visible("#labTest") and page.is_disabled("#labTest"))
         page.select_option("#labSize", "2x3")
         page.wait_for_timeout(300)
         T.check("preview shows the SKU large", "HORN-" in page.inner_html("#labPreview") and "UPC" not in page.inner_text("#labPreview"))
@@ -282,6 +410,9 @@ def run_ui():
         T.check("2 x 3 label QR codes decode to the SKUs", sorted(decode_pdf_qrs(pdf3)) == ["HORN-9MM-115", "SIG-P365-MAG10", "WW-TEE-S"])
         page.select_option("#labSize", "3x2")
         page.wait_for_timeout(300)
+        n_t = len(T.printed)
+        page.click("#labTest")
+        T.check("Print a test label from the page", T.wait_for(lambda: len(T.printed) > n_t and "TEST-LABEL" in T.printed[-1], 10))
         page.screenshot(path=f"{SHOTS}/08c-label-wide.png", full_page=True)
         with page.expect_download() as dl:
             page.click("#labPdf")
@@ -375,6 +506,13 @@ def run_ui():
         page.screenshot(path=f"{SHOTS}/11-log.png", full_page=True)
         T.check("log lists changes", "Hornady" in page.inner_text("#logTable"))
 
+        page.click("nav button[data-tab=gunbroker]")
+        page.wait_for_selector("#gbSync")
+        page.click("#gbSync")
+        T.check("GunBroker tab lists the listings", T.wait_for(lambda: "900001" in page.inner_text("#gbListings"), 30), page.inner_text("#gbListings")[:300])
+        page.wait_for_timeout(500)
+        T.check("dry run shown, feed listing explained", "Dry run" in page.inner_text("#gbStatus") and "feed" in page.inner_text("#gbListings").lower())
+        page.screenshot(path=f"{SHOTS}/14-gunbroker.png", full_page=True)
         page.click("nav button[data-tab=station]")
         for theme in ("dark", "terminal"):
             page.select_option("#theme", theme)

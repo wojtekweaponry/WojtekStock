@@ -152,7 +152,13 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
 #prodTable tbody tr:hover td{background:var(--hover)}
 .labpreview{padding:10px;background:var(--hover);border-radius:8px;border:1px solid var(--line)}
 .labpreview svg{box-shadow:0 1px 4px rgba(0,0,0,.25);border-radius:3px}
-.stock-zero{color:var(--dup);font-weight:700} .stock-neg{color:var(--err);font-weight:700}
+.stock-zero{color:var(--dup);font-weight:700}
+#poTable tbody tr,#vTable tbody tr{cursor:pointer}
+#poTable tbody tr:hover td,#vTable tbody tr:hover td{background:var(--hover)}
+.money{width:92px;text-align:right}
+.formgrid{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center}
+.formgrid input,.formgrid select,.formgrid textarea{width:100%}
+.totals td{font-weight:700;border-bottom:0} .stock-neg{color:var(--err);font-weight:700}
 
 .modal-back{position:fixed;inset:0;background:rgba(10,15,25,.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
 .modal{background:var(--panel);border-radius:var(--radius);max-width:560px;width:100%;padding:20px;border:1px solid var(--line);max-height:90vh;overflow:auto}
@@ -175,6 +181,8 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
   <nav aria-label="Pages">
     <button data-tab="station" aria-selected="true">Station</button>
     <button data-tab="products" aria-selected="false">Products</button>
+    <button data-tab="purchasing" aria-selected="false">Purchasing</button>
+    <button data-tab="gunbroker" aria-selected="false">GunBroker</button>
     <button data-tab="labels" aria-selected="false">Labels</button>
     <button data-tab="log" aria-selected="false">Log</button>
     <button data-tab="people" aria-selected="false">People</button>
@@ -234,6 +242,53 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
     </div>
   </section>
 
+  <section id="tab-purchasing" hidden>
+    <div id="poList">
+      <div class="panel">
+        <div class="row"><h2 class="grow" style="margin:0">Reorder points</h2>
+          <button class="btn sm" id="roSuggest">Suggest from sales</button><button class="btn sm primary" id="roRun">Draft POs now</button></div>
+        <p class="muted small" id="roNote" style="margin:6px 0 0"></p>
+        <div class="tablewrap" style="margin-top:10px;max-height:360px;overflow:auto"><table id="roTable"><thead><tr><th>Part</th><th class="num">In stock</th><th class="num">Coming</th><th class="num">Reorder at</th><th class="num">Order up to</th><th>Vendor</th><th class="num">Needs</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel">
+        <div class="row"><h2 class="grow" style="margin:0">Purchase orders</h2><button class="btn primary" id="poNew">New purchase order</button></div>
+        <div class="row" style="margin-top:10px">
+          <select id="poStatus" aria-label="Status"><option value="open">Open (draft, sent, partly received)</option><option value="">All</option><option value="draft">Drafts</option><option value="sent">Sent</option><option value="partial">Partly received</option><option value="received">Received</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option></select>
+          <select id="poVendor" aria-label="Vendor"></select>
+        </div>
+        <div class="tablewrap" style="margin-top:10px"><table id="poTable"><thead><tr><th>PO</th><th>Vendor</th><th>Status</th><th class="num">Lines</th><th class="num">Units</th><th class="num">Still due</th><th class="num">Total</th><th>Created</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel">
+        <div class="row"><h2 class="grow" style="margin:0">Vendors</h2><button class="btn" id="vNew">Add vendor</button></div>
+        <div class="tablewrap" style="margin-top:10px"><table id="vTable"><thead><tr><th>Vendor</th><th>Account</th><th>Email</th><th>Phone</th><th>Feed prefix</th><th class="num">Parts</th><th class="num">Open POs</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h2>From a distributor feed</h2>
+        <p class="muted small" style="margin-top:0">To stock a part that's only in a distributor feed: copy the listing as a new in-shop product (its own SKU, stock from 0; the listing itself is never changed), or link it to a part you already have. A vendor whose feed prefix matches the listing gets the listing's SKU as its part number.</p>
+        <input id="feedQ" type="search" style="width:100%" placeholder="Search feed listings: name, SKU or UPC" autocomplete="off">
+        <div class="tablewrap" style="margin-top:10px"><table id="feedTable"><tbody></tbody></table></div>
+      </div>
+    </div>
+    <div id="poPanel" hidden></div>
+  </section>
+
+  <section id="tab-gunbroker" hidden>
+    <div class="panel">
+      <div class="row"><h2 class="grow" style="margin:0">GunBroker</h2><button class="btn primary" id="gbSync">Sync now</button></div>
+      <div id="gbStatus" style="margin-top:10px"></div>
+    </div>
+    <div class="panel">
+      <h2>Listings</h2>
+      <p class="muted small" style="margin-top:0">Your active GunBroker listings, matched to in-shop products by SKU. A linked fixed-price listing's quantity follows WooCommerce stock (less the buffer). Feed products and guns are never linked; auctions aren't synced. To link a listing, give it the product's SKU on GunBroker.</p>
+      <div class="tablewrap"><table id="gbListings"><thead><tr><th>Listing</th><th>SKU</th><th>Product</th><th class="num">In stock</th><th class="num">On GunBroker</th><th class="num">Set to</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel">
+      <h2>Sales brought in</h2>
+      <p class="muted small" style="margin-top:0">Each GunBroker sale of a linked product becomes a WooCommerce order (paid, processing, with the buyer's shipping address but no email, so WooCommerce sends them nothing), and stock goes down once. Returns work by scanning the WooCommerce order number.</p>
+      <div class="tablewrap"><table id="gbOrders"><thead><tr><th>GunBroker order</th><th>When</th><th>Buyer</th><th>Parts</th><th>Result</th><th>WooCommerce</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
   <section id="tab-labels" hidden>
     <div class="panel">
       <h2>Labels</h2>
@@ -254,6 +309,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
         <span class="grow"></span>
         <span id="labCount" class="muted small"></span>
         <button class="btn" id="labPdf">Download PDF</button>
+        <button class="btn" id="labTest" hidden>Print a test label</button>
         <button class="btn primary" id="labZebra" hidden>Print on the Zebra</button>
       </div>
     </div>
@@ -288,7 +344,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
       </div>
       <div class="row" style="margin-top:10px">
         <input id="logQ" type="search" placeholder="Product, SKU, person, reason" class="grow">
-        <select id="logKind" aria-label="Change type"><option value="">All changes</option><option value="receive">Receive</option><option value="count">Count</option><option value="adjust">Adjust</option><option value="return">Returned</option><option value="note">Order note</option><option value="gtin">Barcode linked</option><option value="sku">SKU added</option></select>
+        <select id="logKind" aria-label="Change type"><option value="">All changes</option><option value="receive">Receive</option><option value="count">Count</option><option value="adjust">Adjust</option><option value="return">Returned</option><option value="note">Order note</option><option value="gtin">Barcode linked</option><option value="sku">SKU added</option><option value="create">Product created</option></select>
         <select id="logStatus" aria-label="Result"><option value="">Any result</option><option value="done">Done</option><option value="dryrun">Dry run</option><option value="pending">Waiting</option><option value="failed">Failed</option><option value="refused">Refused</option><option value="conflict">Not applied</option><option value="logged">Logged (damaged)</option><option value="cancelled">Cancelled</option></select>
         <input id="logDay" type="date" aria-label="Day">
       </div>
@@ -376,6 +432,10 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
       <div id="driftBody"></div>
     </div>
     <div class="panel">
+      <h2>Email (purchase orders)</h2>
+      <div id="emailBody"></div>
+    </div>
+    <div class="panel">
       <h2>Dropbox backups</h2>
       <div id="dbxBody"></div>
     </div>
@@ -389,7 +449,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const S = {st: null, items: new Map(), byG: new Map(), bySku: new Map(), itemsV: "", op: null, mode: "receive",
            lists: {receive: [], count: [], adjust: []}, adj: {dir: "down", reason: "", note: ""}, last: null, pendingQty: 0,
-           review: null, ret: {order: null, back: {}, note: ""}, lookupId: null, batches: [], labels: [], tab: "station", lastActivity: Date.now()};
+           review: null, ret: {order: null, back: {}, note: ""}, rpo: {po: null, now: {}, extras: [], freight: "", fees: "", invoice: ""}, lookupId: null, batches: [], labels: [], tab: "station", lastActivity: Date.now()};
 const MODE_NAMES = {receive: "Receive", count: "Count", adjust: "Adjust", return: "Return", lookup: "Lookup"};
 const store = {
   get(k, d){ try{ const v = localStorage.getItem("wstock." + k); return v === null ? d : JSON.parse(v); }catch(e){ return d; } },
@@ -423,9 +483,13 @@ function modal({title, html, ok = "OK", cancel = "Cancel", danger = false, onOpe
     back.className = "modal-back";
     back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h3>${esc(title)}</h3><div class="mbody">${html || ""}</div>
       <div class="row end">${cancel ? `<button class="btn" data-v="0">${esc(cancel)}</button>` : ""}<button class="btn ${danger ? "danger" : "primary"}" data-v="1">${esc(ok)}</button></div></div>`;
-    const close = v => { document.removeEventListener("keydown", onKey, true); back.remove(); S.modalOpen = false; try{ before?.focus?.(); }catch(e){} resolve(v ? back : null); };
+    const close = v => {   // v: "1" OK, "0" cancel, or another button's data-v (read back as back.dataset.choice)
+      const c = v === true ? "1" : v === false ? "0" : String(v);
+      document.removeEventListener("keydown", onKey, true); back.remove(); S.modalOpen = false; try{ before?.focus?.(); }catch(e){}
+      back.dataset.choice = c; resolve(c !== "0" ? back : null);
+    };
     const onKey = e => { if (e.key === "Escape"){ e.preventDefault(); close(false); } else if (e.key === "Enter" && e.target.tagName !== "TEXTAREA"){ e.preventDefault(); close(true); } };
-    back.addEventListener("click", e => { if (e.target === back) close(false); const b = e.target.closest("button[data-v]"); if (b) close(b.dataset.v === "1"); });
+    back.addEventListener("click", e => { if (e.target === back) close(false); const b = e.target.closest("button[data-v]"); if (b) close(b.dataset.v); });
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(back);
     S.modalOpen = true;
@@ -522,8 +586,8 @@ async function loadItems(){
   if (r.same) return;
   S.itemsV = r.v;
   S.items = new Map(); S.byG = new Map(); S.bySku = new Map();
-  for (const [id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats, price] of r.rows){
-    S.items.set(id, {id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats: cats || [], price: price || ""});
+  for (const [id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats, price, alts] of r.rows){
+    S.items.set(id, {id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats: cats || [], price: price || "", alts: alts || []});
   }
   reindex();
   renderMode();
@@ -535,6 +599,7 @@ function reindex(){
   for (const it of S.items.values()){
     const g = gkey(it.gtin), k = skey(it.sku);
     if (g){ if (!S.byG.has(g)) S.byG.set(g, []); S.byG.get(g).push(it.id); }
+    for (const a of it.alts || []){ const ag = gkey(a); if (ag){ if (!S.byG.has(ag)) S.byG.set(ag, []); S.byG.get(ag).push(it.id); } }
     if (k){ if (!S.bySku.has(k)) S.bySku.set(k, []); S.bySku.get(k).push(it.id); }
   }
 }
@@ -575,6 +640,8 @@ function renderChrome(){
   if (st.woo.ready && !st.setup.confirmed) b.push(`<div class="banner warn"><b>Changes are locked until Setup is confirmed.</b> Scanning and lookups work; tick your distributor feed prefixes on the <a href="#" data-goto="setup">Setup</a> tab to unlock changes.</div>`);
   if (st.woo.write === "dryrun") b.push(`<div class="banner info"><b>Dry run.</b> Every change is checked against the live store and logged, but nothing is sent to WooCommerce. When the log looks right, set WOO_WRITE=on in stock.env and restart.</div>`);
   if (st.woo.write === "off") b.push(`<div class="banner warn"><b>Writes are off</b> (WOO_WRITE=off): changes are refused.</div>`);
+  if (st.gb && st.gb.attention) b.push(`<div class="banner warn"><b>GunBroker needs a look:</b> ${st.gb.attention} listing${st.gb.attention === 1 ? "" : "s"} or sale${st.gb.attention === 1 ? "" : "s"} flagged. See the <a href="#" data-goto="gunbroker">GunBroker</a> tab.</div>`);
+  if (st.gb && st.gb.error && st.gb.ready) b.push(`<div class="banner warn"><b>GunBroker sync problem:</b> ${esc(st.gb.error)}</div>`);
   if (st.watchCount) b.push(`<div class="banner warn"><b>${st.watchCount} possible double restock${st.watchCount === 1 ? "" : "s"}:</b> a return Wojtek Stock already put back was refunded in WooCommerce with "Restock refunded items" ticked. See <a href="#" data-goto="setup">Setup</a>.</div>`);
   if (sy.error && !sy.running) b.push(`<div class="banner warn"><b>Sync problem:</b> ${esc(sy.error)}</div>`);
   $("#banners").innerHTML = b.join("");
@@ -620,13 +687,14 @@ setInterval(() => { if (S.op && Date.now() - S.lastActivity > 10 * 60 * 1000){ s
 
 /* lists are kept per person, so one person's scans are never credited to another */
 function listKey(){ return "lists." + (S.op ? S.op.code : "_"); }
-function saveLists(){ store.set(listKey(), {lists: S.lists, adj: S.adj, review: S.review, ret: S.ret}); }
+function saveLists(){ store.set(listKey(), {lists: S.lists, adj: S.adj, review: S.review, ret: S.ret, rpo: S.rpo}); }
 function loadLists(){
   const v = store.get(listKey(), null) || {};
   S.lists = Object.assign({receive: [], count: [], adjust: []}, v.lists || {});
   S.adj = Object.assign({dir: "down", reason: "", note: ""}, v.adj || {});
   S.review = v.review || null;
   S.ret = v.ret && v.ret.order ? v.ret : {order: null, back: {}, note: ""};
+  S.rpo = v.rpo && v.rpo.po ? v.rpo : {po: null, now: {}, extras: [], freight: "", fees: "", invoice: ""};
   S.last = null; S.pendingQty = 0;
 }
 
@@ -635,7 +703,9 @@ $$("nav button").forEach(b => b.addEventListener("click", () => showTab(b.datase
 function showTab(name){
   S.tab = name;
   $$("nav button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
-  for (const t of ["station", "products", "labels", "log", "people", "setup"]) $("#tab-" + t).hidden = t !== name;
+  for (const t of ["station", "products", "purchasing", "gunbroker", "labels", "log", "people", "setup"]) $("#tab-" + t).hidden = t !== name;
+  if (name === "gunbroker") loadGb();
+  if (name === "purchasing") loadPurchasing();
   if (name === "products"){ renderProducts(); setTimeout(() => $("#prodQ").focus(), 0); }
   if (name === "station") focusScan();
   if (name === "labels") { renderLabels(); loadNoSku(); }
@@ -672,7 +742,7 @@ function setMode(m){
   S.last = null; S.pendingQty = 0;
   $$(".modes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
   $("#scanHint").textContent = {
-    receive: "Each scan adds 1. To add more at once, scan, then type +12 and press Enter.",
+    receive: "Each scan adds 1; type +12 after a scan for 12. To receive a purchase order, scan its barcode (PO-0001) first.",
     count: "Scan everything on the shelf. Repeat scans add 1; type +12 after a scan for a case. Then review the differences.",
     adjust: "Pick Decrease or Increase and a reason, then scan. Type +3 after a scan to change 3.",
     return: "Scan the order barcode on the packing slip, then each item that came back. Type +3 after a scan for 3.",
@@ -690,9 +760,11 @@ function handleScan(v){
   const cm = up.match(/^CMD-(RECEIVE|COUNT|ADJUST|RETURN|LOOKUP)$/);
   if (cm){ setMode(cm[1].toLowerCase()); beep("done"); flash("ok", "", `${MODE_NAMES[S.mode]} mode`, $("#scanHint").textContent); return; }
   const qm = v.match(/^[+*xX]\s*(\d{1,5})$/);
-  if (qm) return S.mode === "return" ? returnQty(+qm[1]) : setQty(+qm[1]);
+  if (qm) return S.mode === "return" ? returnQty(+qm[1]) : S.mode === "receive" && S.rpo.po ? poQty(+qm[1]) : setQty(+qm[1]);
   hideLink();
+  if (/^PO-?\d{1,7}$/i.test(v)){ if (S.mode !== "receive") setMode("receive"); return loadPoForReceive(v); }
   if (S.mode === "return") return returnScan(v);
+  if (S.mode === "receive" && S.rpo.po) return poReceiveScan(v);
   const ids = matchCode(v);
   if (ids.length === 1) return gotItem(S.items.get(ids[0]), v);
   if (ids.length > 1) return pickOne(ids, v);
@@ -831,6 +903,7 @@ function renderMode(flashId){
   const p = $("#modePanel");
   if (S.mode === "lookup") return renderLookup();
   if (S.mode === "return") return renderReturn(flashId);
+  if (S.mode === "receive" && S.rpo.po) return renderPoReceive(flashId);
   if (S.mode === "count" && S.review) return renderReview();
   const list = S.lists[S.mode].filter(l => S.items.has(l.id));
   const units = list.reduce((a, l) => a + l.n, 0);
@@ -973,7 +1046,7 @@ function renderBatches(){
   p.innerHTML = show.map(b => {
     const n = b.jobs.length, fin = b.jobs.filter(j => !["pending", "working"].includes(j.status)).length;
     return `<div class="row"><b class="grow">${esc(b.label)}</b><span class="small muted">${b.done ? "Finished" : `${fin} of ${n || "…"}`}</span>
-      ${b.done && b.kind === "receive" && b.jobs.some(j => ["done", "dryrun"].includes(j.status)) ? `<button class="btn sm" data-labels="${b.id}">Print labels for these</button>` : ""}
+      ${b.done && ["receive", "porecv"].includes(b.kind) && b.jobs.some(j => ["done", "dryrun"].includes(j.status)) ? `<button class="btn sm" data-labels="${b.id}">Print labels for these</button>` : ""}
       ${b.done ? `<button class="btn sm" data-dismiss="${b.id}">Hide</button>` : ""}</div>
       ${b.paused ? `<div class="banner err small" style="margin:6px 0">Changes are paused: ${esc(b.paused.reason)}</div>` : ""}
       <ul class="progress">${b.jobs.map(j => `<li>${statusTag(j.status)} <span>${esc(j.name)}${changeText(j)}${j.error ? ` <span class="muted small">· ${esc(j.error)}</span>` : ""}</span></li>`).join("")}</ul>`;
@@ -1070,7 +1143,7 @@ async function showLookup(id, quiet){
     }
   }catch(e){ flash("err", "", "Couldn't load that product", e.message); }
 }
-const KIND = {receive: "Received", count: "Counted", adjust: "Adjusted", return: "Returned", note: "Order note", gtin: "Barcode", sku: "SKU"};
+const KIND = {receive: "Received", count: "Counted", adjust: "Adjusted", return: "Returned", note: "Order note", gtin: "Barcode", sku: "SKU", sale: "Sold elsewhere", create: "Created"};
 function renderLookup(d, loading){
   const p = $("#modePanel");
   if (!S.lookupId){ p.innerHTML = `<div class="panel"><div class="empty">Scan a product, or search: <input type="search" id="lkQ" placeholder="Name or SKU" style="margin-left:6px"></div><div id="lkRes" class="results" hidden></div></div>`; return; }
@@ -1088,6 +1161,11 @@ function renderLookup(d, loading){
       <dt>Price</dt><dd>${d.price ? "$" + esc(d.price) : "–"}</dd>
       <dt>WooCommerce id</dt><dd>${d.id}${d.parent ? ` (variation of ${d.parent})` : ""} · ${esc(d.status)}</dd>
       <dt>Labels printed</dt><dd>${d.labels || 0}</dd>
+      ${d.altBarcodes && d.altBarcodes.length ? `<dt>Extra barcodes</dt><dd class="mono">${d.altBarcodes.map(esc).join(", ")} <span class="muted small">(scan here; not in WooCommerce)</span></dd>` : ""}
+      <dt>Reorder</dt><dd>${d.reorder ? `at ${d.reorder.min}, up to ${d.reorder.max}${d.reorder.vendor ? ` from ${esc(d.reorder.vendor)}` : ""}` : `<span class="muted">not set</span>`} ${d.scope === "shop" ? `<button class="btn sm" data-lookup-act="reorder">${d.reorder ? "Change" : "Set"}</button>` : ""}</dd>
+      ${d.costs ? `<dt>Cost</dt><dd>${d.costs.lastCost !== null ? `${money(d.costs.lastCost)} last (landed, ${esc(day(d.costs.lastAt))})${d.costs.avgCost !== null ? ` · ${money(d.costs.avgCost)} average of ${d.costs.received} received` : ""}` : `<span class="muted">nothing received on a PO yet</span>`}</dd>
+        ${d.costs.onOrder ? `<dt>On order</dt><dd><b>${d.costs.onOrder}</b></dd>` : ""}
+        ${d.costs.vendors.length ? `<dt>Vendors</dt><dd>${d.costs.vendors.map(v => `${esc(v.name)}${v.vendor_sku ? ` <span class="mono small">${esc(v.vendor_sku)}</span>` : ""}${v.last_cost !== null ? ` ${money(v.last_cost)}` : ""}`).join(" · ")}</dd>` : ""}` : ""}
     </dl>
     <div class="row" style="margin-top:12px">
       ${d.sku ? `<button class="btn" data-lookup-act="label">Add to labels</button>` : `<button class="btn" data-lookup-act="sku">Give it a SKU</button>`}
@@ -1110,6 +1188,7 @@ $("#modePanel").addEventListener("click", e => { const b = e.target.closest("[da
 async function lookupAction(act){
   const it = S.items.get(S.lookupId);
   if (act === "close"){ S.lookupId = null; renderLookup(); return focusScan(); }
+  if (act === "reorder"){ await editReorder(S.lookupId); showLookup(S.lookupId, true); return focusScan(); }
   if (!it) return;
   if (act === "label"){ addLabel(it.id, 1); toast(`Added to the label list: ${itemTitle(it)}`); return focusScan(); }
   if (act === "sku"){ showTab("labels"); return; }
@@ -1268,6 +1347,163 @@ async function commitReturn(){
   focusScan();
 }
 
+/* ---------- receiving a purchase order at the station ---------- */
+async function loadPoForReceive(code){
+  const has = S.rpo.po && (Object.values(S.rpo.now).some(n => n > 0) || S.rpo.extras.length);
+  if (has){ beep("err"); flash("err", "", `Finish ${S.rpo.po.number} first`, "Press Receive, or Stop receiving this PO, before scanning another."); return; }
+  flash("", "", `Looking up ${code.toUpperCase()}…`, "");
+  try{ startPoReceive((await api("/api/po?number=" + encodeURIComponent(code))).po, true); }
+  catch(e){ beep("err"); flash("err", "", "Couldn't open that purchase order", e.message); }
+}
+function startPoReceive(po, scanned){
+  if (!["sent", "partial"].includes(po.status)){
+    if (!scanned) toast(`${po.number} is ${po.status}: only a sent PO can be received`);
+    beep("err"); flash("err", "", `${po.number} can't be received`, po.status === "draft" ? "It's still a draft: mark it sent first (Purchasing tab)." : `It's ${po.status}.`);
+    return;
+  }
+  S.rpo = {po, now: {}, extras: [], freight: "", fees: "", invoice: ""};
+  S.last = null; S.pendingQty = 0; saveLists();
+  if (S.tab !== "station") showTab("station");
+  if (S.mode !== "receive") setMode("receive"); else renderMode();
+  const due = po.lines.reduce((a, l) => a + l.open, 0);
+  beep("ok"); flash("ok", "", `${po.number} · ${po.vendor}`, `${due} unit${due === 1 ? "" : "s"} still due. Scan what's in the box.`);
+}
+function poLineFor(v){
+  const ids = new Set(matchCode(v));
+  return S.rpo.po.lines.find(l => l.open > 0 && ids.has(l.item_id)) || S.rpo.po.lines.find(l => ids.has(l.item_id))
+    || S.rpo.po.lines.find(l => l.sku && skey(l.sku) === skey(v)) || null;
+}
+async function poReceiveScan(v){
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return; }
+  const line = poLineFor(v), step = S.pendingQty || 1;
+  S.pendingQty = 0;
+  if (line){
+    const now = S.rpo.now[line.id] || 0;
+    if (now + step > line.open){
+      beep("err");
+      flash("err", "", line.open ? `Only ${line.open} of ${line.name} are due` : `${line.name}: nothing more is due`, `${line.qty} ordered on ${S.rpo.po.number}, ${line.received} already received.`);
+      return;
+    }
+    S.rpo.now[line.id] = now + step;
+    S.last = {mode: "porecv", line: line.id, step}; saveLists();
+    beep(now ? "dup" : "ok");
+    flash(now ? "dup" : "ok", "+" + step, line.name, `${now + step} of ${line.open} due`);
+    return renderMode(line.item_id);
+  }
+  const ids = matchCode(v), it = ids.length === 1 ? S.items.get(ids[0]) : null;
+  if (!it){ return unknownCode(v); }
+  beep("err");
+  flash("err", "", `${itemTitle(it)} isn't on ${S.rpo.po.number}`, "If it came in the box anyway, add it as an extra.");
+  if (it.scope !== "shop") return;
+  const back = await modal({title: `Not on ${S.rpo.po.number}`, ok: "Add it as an extra",
+    html: `<p>${esc(itemTitle(it))} wasn't ordered on this PO. If the vendor sent it anyway, add it: it's received with the rest and added to the PO.</p>
+      <div class="formgrid"><label class="small" for="exQty">Quantity</label><input id="exQty" type="number" min="1" value="${step}">
+      <label class="small" for="exCost">Unit cost</label><input id="exCost" type="number" min="0" step="0.01" placeholder="0.00"></div>`});
+  if (back){
+    const ex = S.rpo.extras.find(x => x.item_id === it.id);
+    const n = Math.max(1, Math.floor(+back.querySelector("#exQty").value || 1)), cost = +back.querySelector("#exCost").value || 0;
+    if (ex){ ex.n += n; ex.cost = cost || ex.cost; } else S.rpo.extras.push({item_id: it.id, n, cost});
+    S.last = {mode: "porecv", extra: it.id, step: n}; saveLists();
+    beep("ok"); flash("ok", "+" + n, itemTitle(it), "Added as an extra");
+    renderMode(it.id);
+  }
+  focusScan();
+}
+function poQty(n){
+  const L = S.last && S.last.mode === "porecv" ? S.last : null;
+  if (!L){ S.pendingQty = n; beep("ok"); flash("ok", "×" + n, `The next scan counts ${n}`, ""); return; }
+  if (L.extra){ const ex = S.rpo.extras.find(x => x.item_id === L.extra); ex.n += n - L.step; L.step = n; saveLists(); beep("ok"); flash("ok", "+" + n, itemTitle(S.items.get(ex.item_id)), `${ex.n} extra`); return renderMode(ex.item_id); }
+  const line = S.rpo.po.lines.find(l => l.id === L.line), nv = (S.rpo.now[line.id] || 0) - L.step + n;
+  if (nv > line.open){ beep("err"); flash("err", "", `Only ${line.open} of ${line.name} are due`, ""); return; }
+  S.rpo.now[line.id] = nv; L.step = n; saveLists();
+  beep("ok"); flash("ok", "+" + n, line.name, `${nv} of ${line.open} due`); renderMode(line.item_id);
+}
+function poLanded(){
+  // the same split the server makes: freight and fees by each line's value (by quantity when nothing has a price)
+  const rows = [...S.rpo.po.lines.filter(l => S.rpo.now[l.id] > 0).map(l => ({key: "l" + l.id, q: S.rpo.now[l.id], c: +l.cost || 0})),
+                ...S.rpo.extras.map(x => ({key: "x" + x.item_id, q: x.n, c: +x.cost || 0}))];
+  const extra = (+S.rpo.freight || 0) + (+S.rpo.fees || 0), value = rows.reduce((a, r) => a + r.q * r.c, 0), units = rows.reduce((a, r) => a + r.q, 0);
+  const out = {};
+  for (const r of rows) out[r.key] = r.c + (r.q ? extra * (value > 0 ? r.q * r.c / value : r.q / units) / r.q : 0);
+  return out;
+}
+function renderPoReceive(flashId){
+  const p = $("#modePanel"), o = S.rpo.po, landed = poLanded();
+  const units = Object.values(S.rpo.now).reduce((a, n) => a + n, 0) + S.rpo.extras.reduce((a, x) => a + x.n, 0);
+  const rows = o.lines.filter(l => l.open > 0 || S.rpo.now[l.id]).map(l => { const n = S.rpo.now[l.id] || 0;
+    return `<tr data-pl="${l.id}" class="${l.item_id === flashId ? "flashrow" : ""}"><td><div class="item-name">${esc(l.name)}</div><div class="item-sub mono">${esc(l.sku || "")}${l.vendor_sku ? " · their # " + esc(l.vendor_sku) : ""}</div></td>
+      <td class="num">${l.qty}</td><td class="num">${l.received || "–"}</td><td class="num"><b>${l.open}</b></td>
+      <td class="num"><input class="qty" type="number" min="0" max="${l.open}" value="${n}" data-plq aria-label="Arrived now"><div class="item-sub" data-landed="l${l.id}">${n ? "landed " + money(landed["l" + l.id]) : ""}</div></td></tr>`; }).join("");
+  const extras = S.rpo.extras.map(x => { const it = S.items.get(x.item_id) || {name: "Item " + x.item_id, attrs: "", sku: ""};
+    return `<tr data-px="${x.item_id}" class="${x.item_id === flashId ? "flashrow" : ""}"><td><div class="item-name">${esc(itemTitle(it))}</div><div class="item-sub"><span class="tag dup">not ordered</span> <span class="mono">${esc(it.sku)}</span></div></td>
+      <td class="num">–</td><td class="num">–</td><td class="num"><input class="money" type="number" min="0" step="0.01" value="${x.cost || ""}" data-pxc placeholder="0.00" aria-label="Unit cost"><div class="item-sub">unit cost</div></td>
+      <td class="num"><input class="qty" type="number" min="0" value="${x.n}" data-pxq aria-label="Arrived now"><div class="item-sub" data-landed="x${x.item_id}">${x.n ? "landed " + money(landed["x" + x.item_id]) : ""}</div></td></tr>`; }).join("");
+  const done = o.lines.filter(l => !l.open && !S.rpo.now[l.id]).length;
+  p.innerHTML = `<div class="panel">
+    <div class="row"><h2 class="grow" style="margin:0">Receiving ${esc(o.number)} · ${esc(o.vendor)}</h2>${poTag(o.status)}</div>
+    <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Part</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Due</th><th class="num">Arrived now</th></tr></thead>
+      <tbody>${rows}${extras}</tbody></table></div>
+    ${done ? `<p class="small muted">${done} line${done === 1 ? " is" : "s are"} fully received already.</p>` : ""}
+    <div class="row" style="margin-top:10px">
+      <label class="small">Invoice # <input id="prInv" type="text" value="${esc(S.rpo.invoice)}" style="width:130px"></label>
+      <label class="small">Freight $ <input id="prFreight" type="number" min="0" step="0.01" class="money" value="${esc(S.rpo.freight)}"></label>
+      <label class="small">Fees $ <input id="prFees" type="number" min="0" step="0.01" class="money" value="${esc(S.rpo.fees)}"></label>
+    </div>
+    <p class="small muted" style="margin:6px 0 0">Freight and fees are spread over what's received now, by value, into each part's landed cost.</p>
+    <div class="listfoot"><span class="muted small" id="prUnits">${units ? `${units} unit${units === 1 ? "" : "s"} arrived` : "Nothing scanned yet"}</span><span class="grow"></span>
+      <button class="btn" id="prAll">Everything due arrived</button><button class="btn" id="prStop">Stop receiving this PO</button>
+      <button class="btn primary" id="prGo" ${units && canWrite() ? "" : "disabled"}>Receive ${units} unit${units === 1 ? "" : "s"}</button></div></div>`;
+}
+$("#modePanel").addEventListener("input", e => {
+  if (S.mode !== "receive" || !S.rpo.po) return;
+  const t = e.target;
+  if (t.id === "prInv"){ S.rpo.invoice = t.value; return saveLists(); }
+  if (t.id === "prFreight" || t.id === "prFees"){ S.rpo[t.id === "prFreight" ? "freight" : "fees"] = t.value; saveLists(); return updatePoTotals(); }
+  if (t.hasAttribute("data-plq")){ const l = S.rpo.po.lines.find(x => x.id === +t.closest("tr").dataset.pl); S.rpo.now[l.id] = Math.max(0, Math.min(l.open, Math.floor(+t.value || 0))); saveLists(); }
+  if (t.hasAttribute("data-pxq") || t.hasAttribute("data-pxc")){ const x = S.rpo.extras.find(z => z.item_id === +t.closest("tr").dataset.px);
+    if (t.hasAttribute("data-pxq")) x.n = Math.max(0, Math.floor(+t.value || 0)); else x.cost = +t.value || 0; saveLists(); }
+  updatePoTotals();
+});
+function updatePoTotals(){
+  // the landed costs, unit count and button, changed in place: redrawing would take the cursor out of the field being typed in
+  const landed = poLanded();
+  $$("#modePanel [data-landed]").forEach(el => { const k = el.dataset.landed, v = landed[k]; el.textContent = v !== undefined ? "landed " + money(v) : ""; });
+  const units = Object.values(S.rpo.now).reduce((a, n) => a + n, 0) + S.rpo.extras.reduce((a, x) => a + x.n, 0);
+  const u = $("#prUnits"), b = $("#prGo");
+  if (u) u.textContent = units ? `${units} unit${units === 1 ? "" : "s"} arrived` : "Nothing scanned yet";
+  if (b){ b.textContent = `Receive ${units} unit${units === 1 ? "" : "s"}`; b.disabled = !units || !canWrite(); }
+}
+$("#modePanel").addEventListener("change", e => {
+  if (S.mode !== "receive" || !S.rpo.po) return;
+  if (e.target.matches("[data-pxq]") && S.rpo.extras.some(x => x.n <= 0)){   // an extra set to 0 leaves the list
+    S.rpo.extras = S.rpo.extras.filter(x => x.n > 0); saveLists(); renderMode(); }
+});
+$("#modePanel").addEventListener("click", async e => {
+  if (S.mode !== "receive" || !S.rpo.po) return;
+  const id = e.target.id;
+  if (id === "prAll"){ for (const l of S.rpo.po.lines) if (l.open) S.rpo.now[l.id] = l.open; saveLists(); renderMode(); beep("ok"); flash("ok", "", "Everything due is marked arrived", "Check the box against it, then press Receive."); return focusScan(); }
+  if (id === "prStop"){
+    if ((Object.values(S.rpo.now).some(n => n) || S.rpo.extras.length) && !await modal({title: `Stop receiving ${S.rpo.po.number}?`, html: "<p>Takes it off the screen; nothing has been received yet.</p>", ok: "Stop", danger: true})) return focusScan();
+    S.rpo = {po: null, now: {}, extras: [], freight: "", fees: "", invoice: ""}; S.last = null; saveLists(); renderMode(); return focusScan();
+  }
+  if (id === "prGo") return commitPoReceive();
+});
+async function commitPoReceive(){
+  if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
+  const o = S.rpo.po;
+  const lines = o.lines.filter(l => S.rpo.now[l.id] > 0).map(l => ({line_id: l.id, qty: S.rpo.now[l.id]}));
+  const extras = S.rpo.extras.filter(x => x.n > 0).map(x => ({item_id: x.item_id, qty: x.n, cost: +x.cost || 0}));
+  const forLabels = [...o.lines.filter(l => S.rpo.now[l.id] > 0).map(l => ({id: l.item_id, n: S.rpo.now[l.id]})), ...extras.map(x => ({id: x.item_id, n: x.qty}))];
+  const units = forLabels.reduce((a, x) => a + x.n, 0);
+  try{
+    const r = await api("/api/po/receive", {id: o.id, lines, extras, freight: S.rpo.freight || 0, fees: S.rpo.fees || 0, invoice: S.rpo.invoice});
+    trackBatch(r.batch, "porecv", `${o.number}: ${units} unit${units === 1 ? "" : "s"} received`, forLabels);
+    S.rpo = {po: null, now: {}, extras: [], freight: "", fees: "", invoice: ""}; S.last = null; saveLists(); renderMode();
+    flash("ok", "", "Sending to WooCommerce…", "Each part is re-read live, its stock raised, then read back to confirm.");
+  }catch(err){ beep("err"); flash("err", "", "Not received", err.message); }
+  focusScan();
+}
+
 /* ---------- labels ---------- */
 const MM = 25.4;
 function labelSizes(){
@@ -1310,7 +1546,8 @@ function renderLabels(flashId){
   $("#labCount").textContent = S.labels.length ? `${n} label${n === 1 ? "" : "s"}` + (noSku ? `, ${noSku} product${noSku === 1 ? "" : "s"} skipped (no SKU)` : "") : "";
   $("#labPdf").disabled = !n;
   const sz = labelSizes().find(s => s.id === sel.value);
-  $("#labZebra").hidden = $("#labZebraNote").hidden = !S.st?.label.printer;
+  $("#labZebra").hidden = $("#labZebraNote").hidden = $("#labTest").hidden = !S.st?.label.printer;
+  $("#labTest").disabled = !!(sz && sz.sheet);
   $("#labZebra").disabled = !n || !!(sz && sz.sheet);
   $("#labZebra").title = sz && sz.sheet ? "Sheets print from the PDF on a regular printer" : "";
   const o = labelOpts();
@@ -1377,6 +1614,13 @@ $("#labPdf").addEventListener("click", async () => {
   const skip = sz.sheet ? Math.max(0, +($("#labSkip")?.value || 0)) : 0;
   downloadPdf(`labels-${new Date().toISOString().slice(0, 10)}.pdf`, labelsPdf(all, sz, skip, labelOpts()));
   try{ await api("/api/labels/record", {lines}); loadItems(); }catch(e){}
+});
+$("#labTest").addEventListener("click", async () => {
+  const sz = labelSizes().find(s => s.id === $("#labSize").value);
+  try{
+    const r = await api("/api/labels/test", {size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}});
+    toast(`Test label sent to ${r.printer}. Nothing came out? The printer may be paused (check its light), out of labels, or its head open.`, 9000);
+  }catch(e){ toast(e.message, 9000); }
 });
 $("#labZebra").addEventListener("click", async () => {
   const lines = labelLines();
@@ -1539,7 +1783,25 @@ function renderSetupStatus(){
       <div class="small muted">${[pg.detail, pg.eta !== null ? `about ${dur(pg.eta)} left` : "", `started ${dur(pg.elapsed)} ago`].filter(Boolean).map(esc).join(" · ")}</div></div>`
     : (sy.full_secs ? `<p class="small muted" style="margin:10px 0 0">The last full sync took ${esc(dur(sy.full_secs))}.</p>` : "");
   renderDbx();
+  renderEmail();
 }
+function renderEmail(){
+  const e = S.st.email, el = $("#emailBody");
+  if (el.contains(document.activeElement)) return;
+  el.innerHTML = e.ready ? `<p style="margin-top:0"><span class="tag ok">Set up</span> POs are sent from <b>${esc(e.from)}</b> through ${esc(e.host)}${e.cc ? `, with a copy to ${esc(e.cc)}` : ""}. Vendors set to send by themselves get their automatic POs daily at ${esc(S.st.autoPoTime)}.</p>
+      ${S.st.access.canManage ? `<div class="row"><input id="emTo" type="text" placeholder="Send a test to (blank: SHOP_EMAIL)" style="min-width:260px"><button class="btn" id="emTest">Send a test email</button></div>` : ""}`
+    : `<p style="margin-top:0"><span class="tag dup">Not set up</span> To email purchase orders, add these to <span class="mono">stock.env</span> and restart. With Proton Mail: Settings → All settings → IMAP/SMTP → SMTP tokens → Generate token, for an address on your own domain (a paid plan).</p>
+      <pre class="mono small" style="background:var(--hover);padding:10px;border-radius:8px;overflow-x:auto">SMTP_HOST=smtp.protonmail.ch
+SMTP_PORT=587
+SMTP_USER=the username Proton shows
+SMTP_TOKEN=the token Proton shows
+SMTP_FROM=orders@your-domain.com
+PO_EMAIL_CC=you@your-domain.com   (optional: a copy of each PO to you)</pre>`;
+}
+document.addEventListener("click", async e => {
+  if (e.target.id !== "emTest") return;
+  try{ toast("Sending…", 15000); const r = await api("/api/email/test", {to: $("#emTo").value}); toast(`Test email sent to ${r.to}`, 5000); }catch(err){ toast(err.message, 8000); }
+});
 function renderSetup(){
   const s = S.setup;
   const f = skey($("#prefFilter").value), small = $("#prefSmall").checked;
@@ -1816,7 +2078,7 @@ const QR = (() => {
       g[8][7] = bit(8); g[8][8] = bit(7); g[7][8] = bit(6);
       for (let i = 9; i < 15; i++) g[14 - i][8] = bit(14 - i);
       for (let i = 0; i < 8; i++) g[size - 1 - i][8] = bit(14 - i);
-      for (let i = 8; i < 15; i++) g[8][size - 15 + i] = bit(14 - i);
+      for (let i = 7; i < 15; i++) g[8][size - 15 + i] = bit(14 - i);   // second copy, top right: 8 cells
       g[size - 8][8] = true;
       return g;
     };
@@ -1841,6 +2103,384 @@ const QR = (() => {
   }
   return {encode};
 })();
+
+/* ---------- purchasing: vendors, purchase orders, distributor feed listings ---------- */
+const P = {vendors: [], pos: [], po: null, draft: null};
+const PO_STATUS = {draft: ["", "Draft"], sent: ["info", "Sent"], partial: ["dup", "Partly received"], received: ["ok", "Received"],
+                   closed: ["", "Closed"], cancelled: ["", "Cancelled"]};
+const poTag = s => { const [c, t] = PO_STATUS[s] || ["", s]; return `<span class="tag ${c}">${esc(t)}</span>`; };
+const money = v => v === null || v === undefined || v === "" ? "–" : "$" + (+v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const day = iso => iso ? new Date(iso).toLocaleDateString() : "";
+function badgeFirst(){ if (needBadge()){ toast("Scan your badge on the Station first"); return true; } return false; }
+
+async function loadPurchasing(){
+  try{
+    P.vendors = (await api("/api/vendors")).vendors;
+    const sel = $("#poVendor"), cur = sel.value;
+    sel.innerHTML = `<option value="">All vendors</option>` + P.vendors.map(v => `<option value="${v.id}" ${String(v.id) === cur ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+    $("#vTable tbody").innerHTML = P.vendors.map(v => `<tr data-v="${v.id}"><td class="item-name">${esc(v.name)}</td><td class="small">${esc(v.account || "")}</td>
+      <td class="small">${esc(v.email || "")}</td><td class="small">${esc(v.phone || "")}</td><td class="mono small">${esc(v.feed_prefix || "")}</td>
+      <td class="num">${v.items}</td><td class="num">${v.openPos}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">No vendors yet. Add the companies you buy parts from.</td></tr>`;
+    await loadPos();
+    await loadReorder();
+  }catch(e){ toast(e.message); }
+}
+async function loadReorder(){
+  const rows = (await api("/api/reorder")).rows;
+  const need = rows.filter(r => r.need), nov = need.filter(r => !r.vendor_id);
+  const st = S.st, auto = P.vendors.filter(v => v.auto_send).map(v => v.name);
+  $("#roNote").innerHTML = `Checked after every sync: a part at or below its reorder point goes on its vendor's automatic draft PO, enough to bring it up to its order-up-to level (what's already on a PO counts).
+    ${auto.length ? `${esc(auto.join(", "))} ${auto.length === 1 ? "gets its" : "get their"} automatic POs emailed by ${auto.length === 1 ? "itself" : "themselves"} daily at ${esc(st.autoPoTime)}${st.email.ready ? "" : ` <b style="color:var(--err)">once email is set up (Setup tab)</b>`}; the rest wait for you to send them.` : "Automatic drafts wait for you to look them over and send them; a vendor can be set to have them emailed by itself each day."}
+    ${nov.length ? `<br><b style="color:var(--err)">${nov.length} part${nov.length === 1 ? " needs" : "s need"} a vendor</b> before ${nov.length === 1 ? "it" : "they"} can be drafted.` : ""}`;
+  $("#roTable tbody").innerHTML = rows.map(r => `<tr data-ro="${r.item_id}" style="cursor:pointer"><td><div class="item-name">${esc(r.name)}</div><div class="item-sub mono">${esc(r.sku || "")}</div></td>
+    <td class="num ${r.stock <= 0 ? "stock-zero" : ""}">${fmtNum(r.stock)}</td><td class="num">${r.coming || "–"}</td><td class="num">${r.min}</td><td class="num">${r.max}</td>
+    <td class="small">${r.vendor ? esc(r.vendor) : `<span style="color:var(--err)">none</span>`}</td><td class="num">${r.need ? `<b style="color:var(--dup)">${r.need}</b>` : "–"}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="empty">No reorder points yet. Set one on a part's Lookup card, or press Suggest from sales.</td></tr>`;
+}
+$("#roTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-ro]"); if (tr) editReorder(+tr.dataset.ro).then(loadReorder); });
+$("#roRun").addEventListener("click", async () => {
+  try{
+    const r = await api("/api/reorder/run", {});
+    const d = Object.entries(r.drafted);
+    toast(d.length ? `Added to ${d.map(([n, k]) => `${n} (${k})`).join(", ")}` : "Nothing new needs ordering" + (r.noVendor.length ? `; ${r.noVendor.length} part(s) need a vendor` : ""), 6000);
+    loadPurchasing();
+  }catch(e){ toast(e.message, 6000); }
+});
+$("#roSuggest").addEventListener("click", async () => {
+  toast("Reading the last 90 days of orders…", 8000);
+  let r;
+  try{ r = await api("/api/reorder/suggest", {days: 90}); }catch(e){ return toast(e.message, 6000); }
+  if (!r.rows.length) return toast("No in-shop parts sold in the last 90 days");
+  const back = await modal({title: `Reorder levels from ${r.days} days of sales`, ok: "Save the ticked ones",
+    html: `<p class="small muted" style="margin-top:0">Reorder at: enough to cover the vendor's lead time plus a week. Order up to: that plus a month's sales. Adjust any before saving.</p>
+      <div class="tablewrap" style="max-height:55vh;overflow:auto"><table><thead><tr><th></th><th>Part</th><th class="num">Sold</th><th class="num">Reorder at</th><th class="num">Up to</th></tr></thead><tbody>
+      ${r.rows.map(x => `<tr data-sg="${x.item_id}"><td><input type="checkbox" ${x.curMin === null ? "checked" : ""} aria-label="Use"></td><td>${esc(x.name)}<div class="item-sub">${esc(x.sku || "")} · stock ${fmtNum(x.stock)}${x.curMin !== null ? ` · now ${x.curMin} / ${x.curMax}` : ""}</div></td>
+        <td class="num">${x.sold}</td><td class="num"><input type="number" class="qty" min="0" value="${x.min}" data-k="min"></td><td class="num"><input type="number" class="qty" min="1" value="${x.max}" data-k="max"></td></tr>`).join("")}</tbody></table></div>`});
+  if (!back) return;
+  const rows = [...back.querySelectorAll("tr[data-sg]")].filter(tr => tr.querySelector("input[type=checkbox]").checked)
+    .map(tr => ({item_id: +tr.dataset.sg, min: tr.querySelector("[data-k=min]").value, max: tr.querySelector("[data-k=max]").value}));
+  if (!rows.length || badgeFirst()) return;
+  try{ const s = await api("/api/reorder/set", {rows}); toast(`Saved ${s.saved} reorder point${s.saved === 1 ? "" : "s"}`); loadReorder(); }catch(e){ toast(e.message, 6000); }
+});
+async function editReorder(id){
+  const it = S.items.get(id);
+  if (!it) return;
+  if (!P.vendors.length){ try{ P.vendors = (await api("/api/vendors")).vendors; }catch(e){} }
+  const cur = (await api("/api/reorder")).rows.find(r => r.item_id === id) || {};
+  const back = await modal({title: `Reorder point: ${itemTitle(it)}`, ok: "Save",
+    html: `<div class="formgrid"><label class="small" for="roMin">Reorder when stock is at or below</label><input id="roMin" type="number" min="0" value="${cur.min ?? ""}">
+      <label class="small" for="roMax">Order enough to bring it up to</label><input id="roMax" type="number" min="1" value="${cur.max ?? ""}">
+      <label class="small" for="roVen">Order from</label><select id="roVen"><option value="">The vendor it was last bought from</option>${P.vendors.map(v => `<option value="${v.id}" ${v.id === cur.setVendor ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></div>
+      <p class="small muted">In stock now: ${fmtNum(it.stock)}. Leave both empty to stop reordering this part.</p>`});
+  if (!back || badgeFirst()) return;
+  try{ await api("/api/reorder/set", {rows: [{item_id: id, min: back.querySelector("#roMin").value, max: back.querySelector("#roMax").value, vendor_id: +back.querySelector("#roVen").value || null}]}); toast("Saved"); }
+  catch(e){ toast(e.message, 6000); }
+}
+async function loadPos(){
+  const p = new URLSearchParams({status: $("#poStatus").value});
+  if ($("#poVendor").value) p.set("vendor", $("#poVendor").value);
+  P.pos = (await api("/api/pos?" + p)).pos;
+  $("#poTable tbody").innerHTML = P.pos.map(o => `<tr data-po="${o.id}"><td class="mono"><b>${esc(o.number)}</b>${o.auto ? ` <span class="tag info">auto</span>` : ""}</td><td>${esc(o.vendor)}</td><td>${poTag(o.status)}${o.emailed_at ? ` <span class="small muted">emailed</span>` : ""}</td>
+    <td class="num">${o.lineCount}</td><td class="num">${o.units}</td><td class="num">${["sent", "partial"].includes(o.status) ? o.open : "–"}</td>
+    <td class="num">${money(o.total)}</td><td class="small">${esc(day(o.created_at))}</td></tr>`).join("")
+    || `<tr><td colspan="8" class="empty">No purchase orders here.</td></tr>`;
+}
+$("#poStatus").addEventListener("change", loadPos);
+$("#poVendor").addEventListener("change", loadPos);
+$("#poTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-po]"); if (tr) openPo(+tr.dataset.po); });
+
+/* vendors */
+async function editVendor(v){
+  v = v || {};
+  const f = (k, label, type = "text", extra = "") => `<label class="small" for="vf-${k}">${label}</label><input id="vf-${k}" type="${type}" value="${esc(v[k] ?? "")}" ${extra}>`;
+  const back = await modal({title: v.id ? `Vendor: ${v.name}` : "Add a vendor", ok: "Save",
+    html: `<div class="formgrid">${f("name", "Name")}${f("account", "Your account #")}${f("contact", "Rep")}${f("email", "Email for POs", "email")}
+      ${f("phone", "Phone")}${f("terms", "Terms", "text", 'placeholder="Net 30"')}${f("lead_days", "Lead time (days)", "number", 'min="0" max="365"')}
+      ${f("feed_prefix", "Feed prefix", "text", 'placeholder="e.g. ORI, if this vendor has a feed in your store" class="mono"')}
+      <span class="small">Automatic POs</span><label class="inline small"><input type="checkbox" id="vf-auto_send" ${v.auto_send ? "checked" : ""}> Email them to this vendor by themselves, daily at ${esc(S.st.autoPoTime)}</label>
+      <label class="small" for="vf-notes">Notes</label><textarea id="vf-notes" style="min-height:60px">${esc(v.notes || "")}</textarea></div>
+      ${v.id ? `<p style="margin-bottom:0"><button class="btn sm danger" type="button" data-v="2">Remove this vendor</button></p>` : ""}`});
+  if (!back) return;
+  if (back.dataset.choice === "2"){
+    if (!await modal({title: `Remove ${v.name}?`, html: "<p>Its past purchase orders stay. A vendor with open POs can't be removed.</p>", ok: "Remove", danger: true})) return;
+    if (badgeFirst()) return;
+    try{ await api("/api/vendors/remove", {id: v.id}); toast("Removed"); loadPurchasing(); }catch(e){ toast(e.message, 6000); }
+    return;
+  }
+  const body = {id: v.id};
+  for (const k of ["name", "account", "contact", "email", "phone", "terms", "lead_days", "feed_prefix", "notes"]) body[k] = back.querySelector("#vf-" + k).value;
+  body.auto_send = back.querySelector("#vf-auto_send").checked;
+  if (badgeFirst()) return;
+  try{ await api("/api/vendors", body); toast("Saved"); loadPurchasing(); }catch(e){ toast(e.message, 6000); editVendor(Object.assign({}, v, body)); }
+}
+$("#vNew").addEventListener("click", () => editVendor());
+$("#vTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-v]"); if (tr) editVendor(P.vendors.find(v => v.id === +tr.dataset.v)); });
+
+/* a purchase order: a draft is edited here; a sent one is followed here and received at the station */
+function showPoPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = !on; if (!on) loadPurchasing(); }
+$("#poNew").addEventListener("click", () => {
+  if (!P.vendors.length) return toast("Add a vendor first");
+  P.po = null;
+  P.draft = {vendor_id: +($("#poVendor").value || P.vendors[0].id), notes: "", lines: []};
+  showPoPanel(true); renderPo();
+});
+async function openPo(id){
+  try{
+    P.po = (await api("/api/po?id=" + id)).po;
+    P.draft = P.po.status === "draft" ? {id: P.po.id, vendor_id: P.po.vendor_id, notes: P.po.notes || "",
+      lines: P.po.lines.map(l => ({item_id: l.item_id, qty: l.qty, cost: l.cost, vendor_sku: l.vendor_sku || ""}))} : null;
+    showPoPanel(true); renderPo();
+  }catch(e){ toast(e.message); }
+}
+function draftTotal(){ return P.draft.lines.reduce((a, l) => a + (+l.qty || 0) * (+l.cost || 0), 0); }
+function renderPo(){
+  const el = $("#poPanel");
+  if (P.draft){
+    const d = P.draft;
+    el.innerHTML = `<div class="panel">
+      <div class="row"><button class="btn sm" data-po-act="back">← Purchase orders</button><h2 class="grow" style="margin:0">${P.po ? esc(P.po.number) + " (draft)" : "New purchase order"}</h2></div>
+      <div class="row" style="margin-top:12px"><label class="small">Vendor <select id="pdVendor">${P.vendors.map(v => `<option value="${v.id}" ${v.id === d.vendor_id ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></label>
+        <button class="btn sm" data-po-act="vendorparts">Parts from this vendor</button></div>
+      <input id="pdAdd" type="search" style="width:100%;margin-top:12px" placeholder="Scan or search to add a part" autocomplete="off">
+      <div id="pdRes" class="results" hidden></div>
+      <div class="tablewrap" style="margin-top:12px"><table id="pdTable"><thead><tr><th>Part</th><th>Vendor's part #</th><th class="num">In stock</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Total</th><th></th></tr></thead><tbody>
+        ${d.lines.map((l, i) => { const it = S.items.get(l.item_id) || {name: "Item " + l.item_id, attrs: "", sku: "", gtin: "", stock: null};
+          return `<tr data-i="${i}"><td>${itemCell(it)}</td><td><input type="text" class="mono" data-f="vendor_sku" value="${esc(l.vendor_sku)}" style="width:130px"></td>
+            <td class="num">${fmtNum(it.stock)}</td><td class="num"><input type="number" class="qty" min="1" data-f="qty" value="${l.qty}"></td>
+            <td class="num"><input type="number" class="money" min="0" step="0.01" data-f="cost" value="${l.cost ?? ""}" placeholder="0.00"></td>
+            <td class="num" data-total>${money((+l.qty || 0) * (+l.cost || 0))}</td><td class="num"><button class="btn sm" data-rm>✕</button></td></tr>`; }).join("")
+        || `<tr><td colspan="7" class="empty">Nothing on it yet: scan or search above.</td></tr>`}
+        <tr class="totals"><td colspan="5" class="num">Total</td><td class="num" id="pdTotal">${money(draftTotal())}</td><td></td></tr></tbody></table></div>
+      <textarea id="pdNotes" placeholder="Notes for the vendor (printed on the PO)" style="margin-top:10px;min-height:60px">${esc(d.notes)}</textarea>
+      <div class="listfoot">${P.po ? `<button class="btn danger" data-po-act="cancel">Cancel this PO</button>` : ""}<span class="grow"></span>
+        <button class="btn" data-po-act="save">Save draft</button><button class="btn" data-po-act="pdf">Download PDF</button>
+        <button class="btn" data-po-act="send" ${d.lines.length ? "" : "disabled"}>Save and mark sent</button>
+        ${(() => { const v = P.vendors.find(x => x.id === d.vendor_id) || {}; return `<button class="btn primary" data-po-act="email" ${d.lines.length && v.email && S.st.email.ready ? "" : "disabled"} title="${!S.st.email.ready ? "Email isn't set up (Setup tab)" : !v.email ? "This vendor has no email address" : ""}">Email it to ${esc(v.name || "the vendor")}</button>`; })()}</div>
+      ${P.po && P.po.email_error ? `<p class="small" style="color:var(--err)">Last email attempt failed: ${esc(P.po.email_error)}</p>` : ""}
+      ${d.lines.some(l => !+l.cost) ? `<p class="small" style="color:var(--dup)">Some lines have no price yet: they print as "–" and ask the vendor to confirm. Prices you enter are remembered for next time.</p>` : ""}
+      <p class="muted small" style="margin-bottom:0">${P.po && P.po.auto ? "Drafted automatically from reorder points; it collects parts until it's sent. " : ""}Emailing it sends the PDF to the vendor${S.st.email.cc ? " (with a copy to " + esc(S.st.email.cc) + ")" : ""} and marks it sent. Marking it sent without emailing is for POs you send another way. Either way it's locked and open for receiving.</p></div>`;
+    return;
+  }
+  const o = P.po;
+  el.innerHTML = `<div class="panel">
+    <div class="row"><button class="btn sm" data-po-act="back">← Purchase orders</button><h2 class="grow" style="margin:0">${esc(o.number)} · ${esc(o.vendor)}</h2>${poTag(o.status)}</div>
+    <p class="small muted">Created ${esc(when(o.created_at))}${o.created_by ? " by " + esc(o.created_by) : ""}${o.sent_at ? ` · sent ${esc(when(o.sent_at))}` : ""}${o.emailed_at ? ` · emailed to ${esc(o.emailed_to)} ${esc(when(o.emailed_at))}` : ""}${o.closed_at ? ` · finished ${esc(when(o.closed_at))}` : ""}</p>
+    ${o.email_error ? `<p class="small" style="color:var(--err)">Last email attempt failed: ${esc(o.email_error)}</p>` : ""}
+    <div class="tablewrap"><table><thead><tr><th>Part</th><th>Vendor's part #</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Still due</th><th class="num">Unit cost</th><th class="num">Total</th></tr></thead><tbody>
+      ${o.lines.map(l => `<tr><td><div class="item-name">${esc(l.name)}</div><div class="item-sub mono">${esc(l.sku || "")}${l.extra ? ` · <span class="tag dup">not ordered</span>` : ""}</div></td>
+        <td class="mono small">${esc(l.vendor_sku || "")}</td><td class="num">${l.qty}${l.cancelled ? `<div class="item-sub">${l.cancelled} cancelled</div>` : ""}</td>
+        <td class="num">${l.received}${l.receiving ? `<div class="item-sub">+${l.receiving} saving</div>` : ""}</td><td class="num">${l.open ? `<b>${l.open}</b>` : "–"}</td>
+        <td class="num">${money(l.cost)}</td><td class="num">${money((l.qty - l.cancelled) * (l.cost || 0))}</td></tr>`).join("")}
+      <tr class="totals"><td colspan="6" class="num">Total</td><td class="num">${money(o.total)}</td></tr></tbody></table></div>
+    ${o.notes ? `<p class="small"><b>Notes:</b> ${esc(o.notes)}</p>` : ""}
+    ${o.receipts.length ? `<h3>Received</h3>${o.receipts.map(r => `<div class="small" style="margin:6px 0"><b>${esc(when(r.at))}</b> by ${esc(r.by)}${r.invoice ? ` · invoice ${esc(r.invoice)}` : ""} · freight ${money(r.freight)}, fees ${money(r.fees)}${r.mode !== "on" ? ` · <span class="tag info">dry run</span>` : ""}
+      <ul class="progress">${r.lines.map(x => `<li>${statusTag(x.status)} ${x.qty} × ${esc(x.name)} at ${money(x.unit_cost)}, landed ${money(x.landed_unit)} each</li>`).join("")}</ul></div>`).join("")}` : ""}
+    <div class="listfoot"><button class="btn" data-po-act="pdf">Download PDF</button>
+      ${["sent", "partial"].includes(o.status) ? `<button class="btn" data-po-act="email" ${S.st.email.ready && (o.vendorInfo || {}).email ? "" : "disabled"}>Email it again</button>` : ""}
+      ${o.status === "sent" && !o.receipts.length ? `<button class="btn" data-po-act="unsend">Back to draft</button><button class="btn danger" data-po-act="cancel">Cancel this PO</button>` : ""}
+      ${["sent", "partial"].includes(o.status) ? `<button class="btn" data-po-act="close">The rest isn't coming: close it</button>` : ""}
+      <span class="grow"></span>${["sent", "partial"].includes(o.status) ? `<button class="btn primary" data-po-act="receive">Receive at the station</button>` : ""}</div></div>`;
+}
+$("#poPanel").addEventListener("input", e => {
+  if (!P.draft) return;
+  if (e.target.id === "pdNotes"){ P.draft.notes = e.target.value; return; }
+  if (e.target.id === "pdAdd"){
+    const v = e.target.value, res = $("#pdRes"), found = searchItems(v, 25, ["shop"]);
+    res.hidden = !v.trim();
+    res.innerHTML = found.map(it => `<button data-add="${it.id}">${itemCell(it)}</button>`).join("") || `<div class="empty" style="padding:10px">No in-shop part matches (feed products and guns can't be ordered here).</div>`;
+    return;
+  }
+  const tr = e.target.closest("tr[data-i]");
+  if (tr && e.target.dataset.f){
+    const l = P.draft.lines[+tr.dataset.i];
+    l[e.target.dataset.f] = e.target.dataset.f === "vendor_sku" ? e.target.value : e.target.value === "" ? "" : +e.target.value;
+    tr.querySelector("[data-total]").textContent = money((+l.qty || 0) * (+l.cost || 0));
+    $("#pdTotal").textContent = money(draftTotal());
+  }
+});
+$("#poPanel").addEventListener("change", e => { if (e.target.id === "pdVendor"){ P.draft.vendor_id = +e.target.value; } });
+$("#poPanel").addEventListener("keydown", e => {
+  if (e.target.id !== "pdAdd" || e.key !== "Enter") return;
+  e.preventDefault();
+  const v = e.target.value.trim(), ids = matchCode(v).filter(i => S.items.get(i)?.scope === "shop");
+  const found = ids.length ? ids.map(i => S.items.get(i)) : searchItems(v, 2, ["shop"]);
+  if (found.length === 1){ addPoLine(found[0].id); beep("ok"); } else beep("err");
+});
+async function addPoLine(id, qty, cost, vsku){
+  const d = P.draft, l = d.lines.find(x => x.item_id === id);
+  if (l) l.qty = (+l.qty || 0) + (qty || 1);
+  else {
+    let known = {};
+    if (cost === undefined){ try{ const c = (await api(`/api/item?id=${id}`)).costs; known = c.vendors.find(v => v.vendor_id === d.vendor_id) || {}; }catch(e){} }
+    d.lines.push({item_id: id, qty: qty || 1, cost: cost ?? known.last_cost ?? "", vendor_sku: vsku ?? known.vendor_sku ?? ""});
+  }
+  renderPo();
+  const inp = $("#pdAdd"); if (inp){ inp.value = ""; inp.focus(); }
+}
+$("#poPanel").addEventListener("click", async e => {
+  const add = e.target.closest("[data-add]");
+  if (add) return addPoLine(+add.dataset.add);
+  if (e.target.closest("[data-rm]") && P.draft){ P.draft.lines.splice(+e.target.closest("tr").dataset.i, 1); return renderPo(); }
+  const b = e.target.closest("[data-po-act]");
+  if (!b) return;
+  const act = b.dataset.poAct;
+  if (act === "back") return showPoPanel(false);
+  if (act === "pdf"){
+    if (P.draft){ if (badgeFirst()) return; try{ const r = await saveDraft(); P.po = r; }catch(err){ return toast(err.message, 6000); } }
+    return downloadFile(`/api/po/pdf?id=${P.po.id}`, `${P.po.number}.pdf`);
+  }
+  if (act === "vendorparts"){
+    const rows = (await api("/api/vendor/items?id=" + P.draft.vendor_id)).rows;
+    if (!rows.length) return toast("No parts remembered for this vendor yet: they're added as you order and receive");
+    const back = await modal({title: "Parts from this vendor", ok: "Add the ticked ones",
+      html: `<div class="results" style="max-height:50vh">${rows.map(r => `<label style="display:flex;gap:8px;padding:8px;border-bottom:1px solid var(--line)"><input type="checkbox" value="${r.item_id}" ${r.stock <= 0 ? "checked" : ""}>
+        <span class="grow"><b>${esc(r.name)}</b>${r.attrs ? " (" + esc(r.attrs) + ")" : ""}<div class="item-sub">${esc(r.sku)} · their # ${esc(r.vendor_sku || "–")} · last ${money(r.last_cost)} · in stock ${fmtNum(r.stock)}</div></span></label>`).join("")}</div>`});
+    if (!back) return;
+    for (const c of back.querySelectorAll("input:checked")){ const r = rows.find(x => x.item_id === +c.value); await addPoLine(r.item_id, 1, r.last_cost ?? "", r.vendor_sku || ""); }
+    return;
+  }
+  if (act === "receive"){ startPoReceive(P.po); return; }
+  if (badgeFirst()) return;
+  try{
+    if (act === "email"){
+      if (P.draft) P.po = await saveDraft();
+      const v = P.vendors.find(x => x.id === P.po.vendor_id) || P.po.vendorInfo || {};
+      if (!await modal({title: `Email ${P.po.number} to ${v.name}?`, html: `<p>To <b>${esc(v.email)}</b>${S.st.email.cc ? `, with a copy to ${esc(S.st.email.cc)}` : ""}, with the PDF attached: ${money(P.po.total)}. ${P.po.status === "draft" ? "It's marked sent once it's gone." : ""}</p>`, ok: "Send it"})) return renderPo();
+      toast("Sending…", 15000);
+      P.po = (await api("/api/po/email", {id: P.po.id})).po; P.draft = null;
+      toast(`${P.po.number} emailed to ${P.po.emailed_to}`, 5000);
+      return renderPo();
+    }
+    if (act === "save" || act === "send"){
+      const d = P.draft;
+      const r = {po: await saveDraft()};
+      if (act === "send"){
+        if (!await modal({title: `Mark ${r.po.number} as sent?`, html: `<p>It's locked from then on, and open for receiving. ${money(r.po.total)} to ${esc(r.po.vendor)}.</p>`, ok: "Mark sent"})) { toast(`Saved ${r.po.number}`); return renderPo(); }
+        P.po = (await api("/api/po/action", {id: r.po.id, action: "send"})).po; P.draft = null;
+        toast(`${P.po.number} is sent. Download the PDF to email it.`);
+      } else toast(`Saved ${r.po.number}`);
+      return renderPo();
+    }
+    const confirmText = {cancel: ["Cancel this purchase order?", "It stays in the list as cancelled.", "Cancel it"],
+                         close: ["Close it?", "What hasn't arrived is cancelled; what has stays received. For when the vendor won't send the rest.", "Close it"],
+                         unsend: ["Back to draft?", "So you can change it. Nothing has been received on it.", "Back to draft"]}[act];
+    if (confirmText && !await modal({title: confirmText[0], html: `<p>${confirmText[1]}</p>`, ok: confirmText[2], danger: act !== "unsend"})) return;
+    if (!P.po){ return showPoPanel(false); }
+    P.po = (await api("/api/po/action", {id: P.po.id, action: act})).po;
+    P.draft = P.po.status === "draft" ? {id: P.po.id, vendor_id: P.po.vendor_id, notes: P.po.notes || "", lines: P.po.lines.map(l => ({item_id: l.item_id, qty: l.qty, cost: l.cost, vendor_sku: l.vendor_sku || ""}))} : null;
+    renderPo();
+  }catch(err){ toast(err.message, 6000); }
+});
+
+async function saveDraft(){
+  const d = P.draft;
+  const r = await api("/api/po", {id: d.id, vendor_id: d.vendor_id, notes: d.notes, lines: d.lines.map(l => ({item_id: l.item_id, qty: +l.qty, cost: +l.cost || 0, vendor_sku: l.vendor_sku}))});
+  d.id = r.po.id; P.po = r.po;
+  return r.po;
+}
+async function downloadFile(url, name){
+  try{
+    const r = await fetch(url, {credentials: "same-origin"});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `The server said ${r.status}`);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await r.blob()); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }catch(e){ toast(e.message, 6000); }
+}
+/* (the PO's PDF is made by the server, the same one that's emailed) */
+
+/* distributor feed listings: copy as a new product, or link to a part you have */
+let feedT, feedRows = [];
+$("#feedQ").addEventListener("input", () => { clearTimeout(feedT); feedT = setTimeout(feedSearch, 250); });
+async function feedSearch(){
+  const qv = $("#feedQ").value.trim();
+  if (!qv){ $("#feedTable tbody").innerHTML = ""; return; }
+  try{ feedRows = (await api("/api/feed/search?q=" + encodeURIComponent(qv))).rows; }catch(e){ return toast(e.message); }
+  $("#feedTable tbody").innerHTML = feedRows.map(r => `<tr><td><div class="item-name">${esc(r.name)}</div><div class="item-sub"><span class="mono">${esc(r.sku)}</span>${r.gtin ? ` · <span class="mono">${esc(r.gtin)}</span>` : ""}${r.vendor ? ` · ${esc(r.vendor)}` : ""}${r.price ? ` · ${money(r.price)}` : ""}</div></td>
+    <td class="num" style="white-space:nowrap">${r.linked ? `<span class="tag ok">${r.linked.how === "copied" ? "Copied" : "Linked"}</span> <span class="small mono">${esc(r.linked.sku || "")}</span>`
+      : `<button class="btn sm" data-fcopy="${r.id}">Copy as a new product</button> <button class="btn sm" data-flink="${r.id}">Link to a part I have</button>`}</td></tr>`).join("")
+    || `<tr><td class="empty">No feed listings match.</td></tr>`;
+}
+$("#feedTable").addEventListener("click", async e => {
+  const c = e.target.closest("[data-fcopy]"), l = e.target.closest("[data-flink]");
+  if (!c && !l) return;
+  const f = feedRows.find(r => r.id === +(c || l).dataset.fcopy || r.id === +(c || l).dataset.flink);
+  if (badgeFirst()) return;
+  if (c){
+    const back = await modal({title: "Copy as a new in-shop product", ok: "Create it",
+      html: `<p class="small muted" style="margin-top:0">From <span class="mono">${esc(f.sku)}</span>. The name, descriptions, images, categories, price and weight are copied; stock starts at 0. The feed listing isn't changed.</p>
+        <div class="formgrid"><label class="small" for="fcName">Name</label><input id="fcName" type="text" value="${esc(f.name)}">
+        <span class="small">SKU</span><div><label class="inline"><input type="radio" name="fcSku" value="generate" checked> Next ${esc(S.st.skuPrefix)} number</label><br>
+          <label class="inline"><input type="radio" name="fcSku" value="custom"> My own: </label> <input id="fcSkuVal" type="text" class="mono" placeholder="a part number" style="width:60%"></div>
+        <label class="small" for="fcStatus">On the website</label><select id="fcStatus"><option value="draft">Draft (not shown yet)</option><option value="publish">Published</option><option value="private">Private</option></select>
+        <label class="small" for="fcPrice">Price</label><input id="fcPrice" type="number" min="0" step="0.01" value="${esc(f.price || "")}"></div>
+        ${f.gtin ? `<p class="small muted">WooCommerce allows a UPC on one product only, so <span class="mono">${esc(f.gtin)}</span> stays on the listing. Wojtek Stock keeps it as an extra barcode of the new product: the station finds it; your register may not.</p>` : ""}`,
+      onOpen: el => el.querySelector("#fcSkuVal").addEventListener("focus", () => { el.querySelector("input[value=custom]").checked = true; })});
+    if (!back) return;
+    const mode = back.querySelector("input[name=fcSku]:checked").value;
+    try{
+      const r = await api("/api/feed/copy", {feed_id: f.id, sku_mode: mode, sku: back.querySelector("#fcSkuVal").value, name: back.querySelector("#fcName").value,
+                                             status: back.querySelector("#fcStatus").value, price: back.querySelector("#fcPrice").value});
+      if (r.dryRun){ toast(r.message + ` (would be ${r.would.sku || "a new SKU"})`, 6000); return; }
+      toast(`Created ${r.item.sku}${r.vendor ? `, remembered under ${r.vendor}` : ""}`, 5000);
+      await loadItems(); feedSearch();
+    }catch(err){ toast(err.message, 7000); }
+    return;
+  }
+  const back = await modal({title: "Link to a part you have", ok: "Link",
+    html: `<p class="small muted" style="margin-top:0"><span class="mono">${esc(f.sku)}</span> is the same part as one you already stock. Wojtek Stock remembers that${f.vendor ? ` (as ${esc(f.vendor)}'s part number)` : ""}${f.gtin ? `, and the listing's UPC will scan to your part at the station` : ""}.</p>
+      <input id="flQ" type="search" style="width:100%" placeholder="Find your part: name or SKU" autocomplete="off"><div id="flRes" class="results"></div>`,
+    onOpen: el => { const qEl = el.querySelector("#flQ"), res = el.querySelector("#flRes");
+      const draw = () => { res.innerHTML = searchItems(qEl.value || f.name.split(" ").slice(0, 2).join(" "), 20, ["shop"]).map(it => `<label style="display:flex;gap:8px;padding:8px;border-bottom:1px solid var(--line)"><input type="radio" name="flPick" value="${it.id}"><span>${itemCell(it)}</span></label>`).join("") || `<div class="empty" style="padding:10px">No in-shop part matches.</div>`; };
+      qEl.addEventListener("input", draw); draw(); }});
+  const pick = back && back.querySelector("input[name=flPick]:checked");
+  if (!pick) return;
+  try{ const r = await api("/api/feed/link", {feed_id: f.id, item_id: +pick.value}); toast(`Linked${r.vendor ? ` under ${r.vendor}` : ""}${r.altBarcode ? `; ${r.altBarcode} now scans to your part` : ""}`, 5000); await loadItems(); feedSearch(); }
+  catch(err){ toast(err.message, 7000); }
+});
+
+/* ---------- GunBroker ---------- */
+const GB_RESULT = {imported: ["ok", "Brought in"], "dry run": ["info", "Dry run"], skipped: ["", "Skipped"], failed: ["err", "Failed"],
+                   "cancelled after import": ["dup", "Cancelled after"]};
+async function loadGb(){
+  let g;
+  try{ g = await api("/api/gb"); }catch(e){ return toast(e.message); }
+  const st = g.status || {};
+  const mode = {on: `<span class="tag ok">Live</span>`, dryrun: `<span class="tag info">Dry run</span>`, off: `<span class="tag">Off</span>`}[g.mode] || g.mode;
+  $("#gbSync").disabled = !g.ready;
+  $("#gbStatus").innerHTML = g.ready ? `<dl class="card-grid">
+      <dt>Mode</dt><dd>${mode} ${g.mode === "dryrun" ? "Everything is worked out and shown here, but nothing changes on GunBroker or in WooCommerce. Set GB_SYNC=on when it looks right." : "Quantities are kept in step and sales are brought in."}</dd>
+      <dt>Account</dt><dd>${esc(g.user)}${g.sandbox ? ` <span class="tag dup">sandbox</span>` : ""}</dd>
+      <dt>Hold back</dt><dd>${g.buffer} unit${g.buffer === 1 ? "" : "s"} per listing (GB_BUFFER)</dd>
+      <dt>Checked</dt><dd>every ${g.minutes} minutes · last ${esc(when(st.last_ok) || "not yet")}${st.running ? " · syncing now…" : ""}</dd>
+      <dt>Sales</dt><dd>${g.createOrders ? "become WooCommerce orders" : "lower stock only (GB_CREATE_ORDERS=off)"}</dd>
+      ${st.error ? `<dt>Problem</dt><dd style="color:var(--err)">${esc(st.error)}</dd>` : ""}</dl>`
+    : `<p style="margin-top:0"><span class="tag dup">Not set up</span> Add these to <span class="mono">stock.env</span>, then restart. The developer key comes from GunBroker (ask them for one; the sandbox has its own key). Your GunBroker password is only sent to GunBroker, to get an access token.</p>
+      <pre class="mono small" style="background:var(--hover);padding:10px;border-radius:8px;overflow-x:auto">GB_DEVKEY=the developer key GunBroker gives you
+GB_USERNAME=your GunBroker username
+GB_PASSWORD=your GunBroker password
+GB_SANDBOX=off      (on: GunBroker's test site, with its own key)
+GB_SYNC=dryrun      (dryrun first; on when it looks right)
+GB_BUFFER=0         (hold this many back from GunBroker)</pre>`;
+  $("#gbListings tbody").innerHTML = g.listings.map(l => `<tr><td><a href="https://www.gunbroker.com/item/${l.gb_id}" target="_blank" rel="noopener" class="mono">${l.gb_id}</a><div class="item-sub">${esc(l.title)}${l.fixed ? "" : " · auction"}</div></td>
+      <td class="mono small">${esc(l.sku || "")}</td>
+      <td>${l.item_id ? `<span class="item-name">${esc(l.item_name)}</span>` : `<span class="muted small">${esc(l.why || "")}</span>`}${l.error ? `<div class="item-sub" style="color:var(--err)">${esc(l.error)}</div>` : ""}</td>
+      <td class="num">${l.item_id ? fmtNum(l.stock) : "–"}</td><td class="num">${l.qty}</td>
+      <td class="num">${l.item_id && l.fixed && l.want !== null ? (l.want === l.qty ? `<span class="tag ok">${l.want}</span>` : `<b style="color:var(--dup)">${l.want}</b>`) : "–"}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="empty">${g.ready ? "No active listings found yet. Press Sync now." : "Not connected."}</td></tr>`;
+  $("#gbOrders tbody").innerHTML = g.orders.map(o => { const [c, t] = GB_RESULT[o.status] || ["", o.status];
+    return `<tr><td class="mono">${o.gb_order_id}</td><td class="small">${esc(when(o.at))}</td><td class="small">${esc(o.buyer || "")}</td>
+      <td class="small">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join("<br>") || "–"}</td>
+      <td><span class="tag ${c}">${esc(t)}</span><div class="item-sub">${esc(o.detail || "")}</div></td>
+      <td class="mono">${o.woo_number ? "#" + esc(o.woo_number) : "–"}</td></tr>`; }).join("")
+    || `<tr><td colspan="6" class="empty">No GunBroker sales yet.</td></tr>`;
+}
+$("#gbSync").addEventListener("click", async () => {
+  const b = $("#gbSync"); b.disabled = true; toast("Syncing with GunBroker…", 20000);
+  try{ const r = await api("/api/gb/sync", {}); toast(`${r.listings} listings · ${r.orders} new sale${r.orders === 1 ? "" : "s"} · ${r.pushed} quantit${r.pushed === 1 ? "y" : "ies"} updated`, 6000); }
+  catch(e){ toast(e.message, 8000); }
+  b.disabled = false; loadGb();
+});
 
 function qrSvg(text, px){
   // a QR code drawn by the page itself, with a 2-module quiet zone; px = size of one module in CSS pixels
@@ -1910,8 +2550,8 @@ class PdfPage {
   pt(mm){ return +(mm * 72 / 25.4).toFixed(3); }
   rect(x, y, w, h){ this.ops.push(`${this.pt(x)} ${this.pt(this.h - y - h)} ${this.pt(w)} ${this.pt(h)} re f`); }
   cut(x, y, w, h){ this.ops.push(`q 0.6 g 0.4 w [3 2] 0 d ${this.pt(x)} ${this.pt(this.h - y - h)} ${this.pt(w)} ${this.pt(h)} re S Q`); }
-  text(x, y, str, size, font, align){   // y = baseline, mm from the top
-    const left = align === "center" ? x - textW(str, font, size) / 2 : x;
+  text(x, y, str, size, font, align){   // y = baseline, mm from the top; align: left (default), center or right
+    const left = align === "center" ? x - textW(str, font, size) / 2 : align === "right" ? x - textW(str, font, size) : x;
     this.ops.push(`BT /${FONTS[font][0]} ${size.toFixed(2)} Tf 1 0 0 1 ${this.pt(left)} ${this.pt(this.h - y)} Tm (${pdfText(str)}) Tj ET`);
   }
   qr(text, x, y, side){   // side includes a 1-module quiet zone each way; the label's own margin adds more

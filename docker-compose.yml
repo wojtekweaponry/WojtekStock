@@ -5,7 +5,7 @@ name: wojtek-stock
 services:
   stock:
     build: .
-    image: wojtek-stock:v8
+    image: wojtek-stock:v12
     container_name: wojtek-stock
     ports:
       - "8090:8090"          # to listen on one interface only: "10.42.10.246:8090:8090"

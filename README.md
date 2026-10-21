@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v8.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v12.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v8.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v12.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -187,6 +187,101 @@ done the restocking. Two safety nets:
   appears, and the Setup tab lists the order and product under **Possible double restocks**: lower that product's stock
   with Adjust (Count correction), then clear the list.
 
+## Purchasing (parts only)
+
+The **Purchasing** tab has purchase orders, vendors, and the distributor feed search. Guns never go on a PO, and
+neither do feed products: a PO holds in-shop parts whose stock Wojtek Stock manages.
+
+**Vendors:** name, your account number, rep, the email POs go to, phone, terms, usual lead time, and (optional) the
+SKU prefix of their feed in your store (`ORI`). Wojtek Stock remembers each vendor's part number and last price for
+every part you order from them.
+
+**A purchase order:**
+
+1. **New purchase order**, pick the vendor, then scan or search parts onto it; **Parts from this vendor** lists the
+   ones you've ordered from them before (out-of-stock ones ticked). Set quantities and unit costs; the vendor's part
+   number and last price fill in when known. Add notes for the vendor.
+2. **Save draft** while you work on it; **Download PDF** for a clean PO with your letterhead (`SHOP_NAME`,
+   `SHOP_ADDRESS`, `SHOP_PHONE`, `SHOP_EMAIL` in `stock.env`), the vendor, ship-to, lines, total, and a QR code of its
+   number. **Email it to (vendor)** sends it (see Emailing POs below); **Save and mark sent** is for a PO you send another
+   way. Either locks it and opens it for receiving.
+3. **When the box comes:** at the station, scan the PO's QR code (or press **Receive at the station** on the PO). Scan
+   what's in the box: each scan is checked against what's still due, and `+5` after a scan makes it 5. Something that
+   wasn't ordered gets the error buzz and the offer to **add it as an extra**, with its cost. **Everything due
+   arrived** marks it all.
+4. Enter the **invoice number, freight and fees**, then **Receive**. Stock goes up the same safe way as everything
+   else (re-read live, changed, read back, logged as "Received on PO-0001"), and **Print labels for these** is offered
+   for what arrived.
+
+**Partials and backorders:** what hasn't arrived stays due, and the PO shows **Partly received** until the rest comes;
+receive it the same way when it does. **The rest isn't coming: close it** cancels what's still due and keeps what
+arrived. A sent PO with nothing received can go **back to draft** or be **cancelled**.
+
+**Landed costs:** a receipt's freight and fees are spread over what arrived in it, by each line's value (by quantity
+when nothing has a price), into each part's landed unit cost; the receiving screen shows each one as you go. A part's
+Lookup card shows its **last landed cost**, its **average** over everything received, what's **on order**, and its
+vendors with their part numbers and prices. In dry run, receipts are worked out and logged but nothing is counted as
+received.
+
+**Reorder points:** a part's **reorder point** and **order-up-to level** are set on its Lookup card (**Reorder → Set**),
+or for many parts at once with **Suggest from sales** on the Purchasing tab: from the last 90 days of WooCommerce
+orders, enough to cover the vendor's lead time plus a week, then a month's sales on top (adjust any before saving).
+After every sync, a part at or below its reorder point goes on its vendor's **automatic draft PO** (marked *auto*),
+with enough to bring it up to its order-up-to level. What's already on an open PO, drafts included, counts as coming,
+so nothing is ordered twice. The vendor is the one set for the part, or the one it was last bought from or priced by;
+a part with neither is flagged. **Draft POs now** runs the check on the spot. Lines with no known price print as "–",
+asking the vendor to confirm.
+
+**Emailing POs:** with email set up (below), **Email it to (vendor)** sends the PO with its PDF attached, a short
+message listing the parts, replies going to `SHOP_EMAIL`, and a copy to `PO_EMAIL_CC`, then marks it sent. A sent PO
+can be emailed again. A vendor can be set to **email its automatic POs by themselves**: each day at `AUTO_PO_TIME`
+(3 PM unless you change it), its automatic draft is emailed and marked sent with nobody pressing anything. Drafts you
+make by hand are never sent by themselves. If an email fails (a wrong token, the mail server down), the PO stays as it
+was and says why.
+
+**Email setup (Proton Mail):** Proton → Settings → All settings → IMAP/SMTP → **SMTP tokens** → Generate token, for the
+address POs should come from (it must be on your own domain, and needs a paid plan). Put what it shows in `stock.env`:
+`SMTP_HOST=smtp.protonmail.ch`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_TOKEN`, `SMTP_FROM` (that address), optionally
+`PO_EMAIL_CC`; then `sudo docker compose up -d`. **Setup → Email → Send a test email** checks it. Your Proton password
+never goes in `stock.env`, and revoking the token in Proton cuts off Wojtek Stock alone.
+
+**From a distributor feed:** search the feed listings by name, SKU or UPC, then either
+
+- **Copy as a new product**: a new in-shop WooCommerce product with the listing's name, descriptions, images (the same
+  pictures, not copies), categories, price and weight, its own SKU (the next `WW-` number or one you type), stock
+  tracked from 0, and Draft, Published or Private as you choose. The listing itself is never changed. WooCommerce
+  allows a UPC on one product only, so the listing keeps its UPC; Wojtek Stock keeps it as an **extra barcode** of the
+  new product, so the station finds it (your register may not).
+- **Link to a part I have**: the listing and your part are the same thing. The listing's UPC scans to your part at the
+  station, and if a vendor has the listing's feed prefix, the listing's SKU becomes that vendor's part number for it.
+
+## GunBroker
+
+Wojtek Stock connects to GunBroker directly (phase 3). **You create your listings on GunBroker as usual**, giving each
+the product's SKU; Wojtek Stock does the rest:
+
+- **Listings are linked to in-shop products by SKU.** The **GunBroker** tab shows every active listing, the product
+  it's linked to, or why not (no matching SKU, a distributor feed product, a serialized gun: feed products and guns are
+  never linked). Auctions are shown but not synced.
+- **Quantities follow WooCommerce stock.** Every few minutes (`GB_MINUTES`), each linked fixed-price listing is set to
+  WooCommerce stock less `GB_BUFFER` (units held back so the last one can't sell twice). When a product sells out here,
+  Wojtek Stock tries to set its listing to 0; GunBroker may refuse a quantity of 0, and if it does the listing is
+  flagged, with a banner, so you can end it on GunBroker. Wojtek Stock never ends or edits listings beyond quantity.
+- **GunBroker sales come in.** Each new sale of a linked product becomes a WooCommerce order (paid, processing, the
+  buyer's shipping address, a note with the GunBroker order number, and no buyer email, so WooCommerce emails them
+  nothing), so ShipStation, your sales history and Return mode all treat it like a website order. Stock goes down
+  exactly once: if WooCommerce lowered it when the order was made, that's it; if not, Wojtek Stock lowers it (logged as
+  "Sold on GunBroker"). Parts on an order that aren't linked are noted and left alone; an order with nothing linked is
+  skipped. A sale cancelled on GunBroker after it came in is flagged for you to check. `GB_CREATE_ORDERS=off` lowers
+  stock without making orders.
+- **Dry run first.** With `GB_SYNC=dryrun` (the default), the GunBroker tab shows what would be set and which sales
+  would come in, and nothing changes on GunBroker or in WooCommerce. Set `GB_SYNC=on` when it looks right; sales made
+  during the dry run are not brought in afterwards (you'll have handled those by hand).
+
+**Setup:** ask GunBroker for an API developer key (the sandbox, their test site, has a separate key: `GB_SANDBOX=on`
+uses it). In `stock.env`: `GB_DEVKEY`, `GB_USERNAME`, `GB_PASSWORD` (only ever sent to GunBroker, for an access token),
+`GB_SYNC=dryrun`, optionally `GB_BUFFER`; then `sudo docker compose up -d`, and **GunBroker → Sync now**.
+
 ## Labels
 
 Each label carries a **QR code of the product's SKU** and **the SKU in large letters**, with the name and variation
@@ -215,6 +310,15 @@ that has a UPC but no SKU.
 - **Print on the Zebra:** set `LABEL_PRINTER` (and `LABEL_DPI`) in `stock.env`; the size is whatever you pick under
   Label design (rolls only; Avery sheets are for a regular printer). The Zebra uses its own built-in font, a little
   narrower than the preview's, so its SKU lettering can come out slightly different.
+- **Print a test label** (beside Print on the Zebra) sends a label of the chosen size with its edges drawn, a QR code
+  and the time: the first thing to try after changing anything.
+- **When a label doesn't print** (lessons from setting up the Locator's Zebra, the same printer):
+  - **Check the printer's light first.** A paused Zebra accepts every job and prints nothing, so it looks connected.
+    Also: out of labels, or the head open.
+  - **Check the route between networks.** The Zebra (`10.42.1.132`) is on a different network from the server. On the
+    server: `timeout 3 bash -c '</dev/tcp/10.42.1.132/9100' && echo open`.
+  - **A blank label** means the wrong media type (direct thermal vs thermal transfer with a ribbon). **Cut off or
+    shifted** means the size settings or a calibration (hold Pause and Cancel for 2 seconds on most desktop Zebras).
 - **Products without a SKU** are listed on the Labels tab. **Give the ticked products SKUs** saves new ones like
   `WW-000123` to WooCommerce, after you confirm. It never touches a product that already has a SKU.
 
@@ -272,7 +376,9 @@ A Proxmox backup of the VM covers it too.
   parent, for a variation), not just the local copy.
 - Changes are locked until Setup is confirmed; new installs start in dry run.
 - Only `stock_quantity`, `global_unique_id` (linking a barcode), `sku` (generating one, only when empty) and order
-  notes (a return) are ever written. Every product write is read back to confirm.
+  notes (a return) are ever written to existing products and orders; new products are created only when you copy a
+  feed listing (the listing itself is only read), and new orders only for GunBroker sales. On GunBroker, only a linked
+  listing's quantity is ever changed. Every product write is read back to confirm.
 - A return can't bring back more than the order sold, minus what already came back here or was restocked by
   WooCommerce; this is checked again, live, when you press Return.
 - Receive and Adjust apply the difference to live stock, so sales aren't overwritten; Count refuses if stock moved
@@ -299,10 +405,12 @@ A Proxmox backup of the VM covers it too.
 `./run-tests.sh` (in `~/wojtek-stock`) runs the server tests in a throwaway Python container: about 3 minutes, against
 a pretend WooCommerce store with a temporary database, never your settings, your data or your store. The last line says
 how many passed and names any that failed. `bash tests/test_deploy.sh` checks `deploy.sh` with a pretend GitHub, and
-`tests/test_ui.py` drives the page in a headless browser (it needs Playwright, so it's run before each version is
+`python3 tests/zpl_preview.py` draws what the Zebra will print, from the printer commands themselves (a check that no
+text runs over is part of the tests), and `tests/test_ui.py` drives the page in a headless browser (it needs Playwright, so it's run before each version is
 handed over rather than on the server). The tests live in `tests/` and aren't built into the image.
 
-## Later phases
+## eBay and Amazon
 
-- **Phase 2:** purchase orders by vendor, receiving against POs (partials, backorders), costs.
-- **Phase 3:** stock and order sync with eBay, Amazon and GunBroker.
+- **eBay and Amazon:** best done with WP-Lister Pro (a WooCommerce plugin) rather than in Wojtek Stock: it keeps
+  WooCommerce as the master copy and brings marketplace orders in as WooCommerce orders, which Wojtek Stock already
+  handles. Many gun parts can't be sold there anyway.

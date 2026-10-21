@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v8"
+VERSION = "v12"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -75,6 +75,29 @@ CFG = {
     "label_w_in": float(env("LABEL_WIDTH_IN", "2") or 2),
     "label_l_in": float(env("LABEL_LENGTH_IN", "1") or 1),
     "shop_tz": env("SHOP_TZ", "America/New_York"),
+    # printed on purchase orders
+    "shop_name": env("SHOP_NAME", "Wojtek Weaponry"),
+    "shop_address": env("SHOP_ADDRESS"),          # lines separated by |
+    "shop_phone": env("SHOP_PHONE"),
+    "shop_email": env("SHOP_EMAIL"),
+    # sending purchase orders by email (Proton Mail: an SMTP token, smtp.protonmail.ch, port 587)
+    "smtp_host": env("SMTP_HOST"),
+    "smtp_port": int(env("SMTP_PORT", "587") or 587),
+    "smtp_user": env("SMTP_USER"),
+    "smtp_token": env("SMTP_TOKEN"),
+    "smtp_from": env("SMTP_FROM"),
+    "po_cc": env("PO_EMAIL_CC"),                  # a copy of every PO email, to you
+    "auto_po_time": env("AUTO_PO_TIME", "15:00") or "15:00",   # when vendors set to send automatically get their POs
+    # GunBroker: a developer key from GunBroker, and your GunBroker login (exchanged for an access token)
+    "gb_devkey": env("GB_DEVKEY"),
+    "gb_username": env("GB_USERNAME"),
+    "gb_password": env("GB_PASSWORD"),
+    "gb_sandbox": env_on("GB_SANDBOX"),
+    "gb_api": env("GB_API_URL"),                  # only for testing; normally worked out from GB_SANDBOX
+    "gb_sync": (env("GB_SYNC", "dryrun") or "dryrun").lower(),   # off | dryrun | on
+    "gb_buffer": int(env("GB_BUFFER", "0") or 0), # hold this many back from GunBroker
+    "gb_minutes": max(1.0, float(env("GB_MINUTES", "5") or 5)),
+    "gb_create_orders": env("GB_CREATE_ORDERS", "on").lower() not in ("off", "0", "no", "false"),
 }
 if CFG["woo_write"] not in ("off", "dryrun", "on"):
     CFG["woo_write"] = "dryrun"
@@ -184,6 +207,44 @@ add_col("jobs", "order_number", "TEXT")
 add_col("jobs", "qty", "INTEGER")          # a return: how many came back
 add_col("jobs", "restock", "INTEGER")      # a return: 1 = back in stock, 0 = logged only (damaged)
 conn.execute("CREATE INDEX IF NOT EXISTS jobs_order ON jobs(order_id)")
+# v9: purchasing
+conn.executescript("""
+CREATE TABLE IF NOT EXISTS vendors(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, account TEXT, contact TEXT,
+    email TEXT, phone TEXT, terms TEXT, lead_days INTEGER, feed_prefix TEXT, notes TEXT, active INTEGER DEFAULT 1,
+    created_at TEXT);
+CREATE TABLE IF NOT EXISTS vendor_items(vendor_id INTEGER, item_id INTEGER, vendor_sku TEXT, last_cost REAL,
+    updated_at TEXT, PRIMARY KEY(vendor_id, item_id));
+CREATE TABLE IF NOT EXISTS pos(id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, vendor_id INTEGER, status TEXT,
+    notes TEXT, created_at TEXT, created_by TEXT, sent_at TEXT, closed_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS po_lines(id INTEGER PRIMARY KEY AUTOINCREMENT, po_id INTEGER, item_id INTEGER, name TEXT,
+    sku TEXT, vendor_sku TEXT, qty INTEGER, cost REAL, cancelled INTEGER DEFAULT 0, extra INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS po_lines_po ON po_lines(po_id);
+CREATE INDEX IF NOT EXISTS po_lines_item ON po_lines(item_id);
+CREATE TABLE IF NOT EXISTS receipts(id INTEGER PRIMARY KEY AUTOINCREMENT, po_id INTEGER, batch TEXT, at TEXT, by TEXT,
+    freight REAL, fees REAL, invoice TEXT, note TEXT, mode TEXT);
+CREATE TABLE IF NOT EXISTS receipt_lines(id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_id INTEGER, po_line_id INTEGER,
+    item_id INTEGER, qty INTEGER, unit_cost REAL, landed_unit REAL, job_id INTEGER);
+CREATE INDEX IF NOT EXISTS receipt_lines_item ON receipt_lines(item_id);
+CREATE INDEX IF NOT EXISTS receipt_lines_line ON receipt_lines(po_line_id);
+CREATE TABLE IF NOT EXISTS feed_links(feed_id INTEGER PRIMARY KEY, item_id INTEGER, how TEXT, at TEXT, by TEXT);
+CREATE TABLE IF NOT EXISTS alt_barcodes(gkey TEXT PRIMARY KEY, code TEXT, item_id INTEGER, source TEXT, at TEXT);
+""")
+add_col("jobs", "po_id", "INTEGER")
+# v10: reorder points, automatic drafts, email
+conn.executescript("""
+CREATE TABLE IF NOT EXISTS gb_listings(gb_id INTEGER PRIMARY KEY, title TEXT, sku TEXT, qty INTEGER, fixed INTEGER,
+    price REAL, item_id INTEGER, why TEXT, want INTEGER, pushed_qty INTEGER, pushed_at TEXT, error TEXT, seen_at TEXT);
+CREATE TABLE IF NOT EXISTS gb_orders(gb_order_id INTEGER PRIMARY KEY, at TEXT, buyer TEXT, total REAL, status TEXT,
+    woo_order_id INTEGER, woo_number TEXT, detail TEXT, items TEXT, imported_at TEXT, mode TEXT);
+""")
+conn.execute("""CREATE TABLE IF NOT EXISTS reorder(item_id INTEGER PRIMARY KEY, min_qty INTEGER, max_qty INTEGER,
+    vendor_id INTEGER, updated_at TEXT, by TEXT)""")
+add_col("vendors", "auto_send", "INTEGER DEFAULT 0")
+add_col("pos", "auto", "INTEGER DEFAULT 0")
+add_col("pos", "emailed_at", "TEXT")
+add_col("pos", "emailed_to", "TEXT")
+add_col("pos", "email_error", "TEXT")
+add_col("jobs", "po_number", "TEXT")
 conn.execute("""CREATE TABLE IF NOT EXISTS restock_watch(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, order_id INTEGER,
     order_number TEXT, item_id INTEGER, name TEXT, qty INTEGER, note_id INTEGER UNIQUE, note TEXT)""")
 
@@ -815,12 +876,17 @@ def sync_loop():
                 if due_at > local:
                     due_at -= timedelta(days=1)
                 want_full = _sync_now["full"] or not last_full or last_full < due_at.astimezone(timezone.utc)
+                synced = False
                 if want_full:
                     _sync_now["full"] = False
                     full_sync("requested" if last_full else "first")
+                    synced = True
                 elif _sync_now["inc"] or not last_sync or (now - last_sync).total_seconds() >= CFG["sync_minutes"] * 60:
                     _sync_now["inc"] = False
                     inc_sync()
+                    synced = True
+                if synced and setup_confirmed():
+                    reorder_run()   # parts that just fell to their reorder point go on their vendor's automatic draft
         except (WooError, ApiError):
             pass
         except Exception as e:
@@ -875,7 +941,7 @@ def live_many(ids):
 
 
 # ---------------------------------------------------------------- the write guard
-STOCK_KINDS = ("receive", "count", "adjust", "return")
+STOCK_KINDS = ("receive", "count", "adjust", "return", "sale")
 
 
 def guard(kind, item, parent):
@@ -925,6 +991,9 @@ def job_finish(job_id, status, before=None, after=None, error="", mode=None):
         conn.execute("UPDATE jobs SET status=?, before=?, after=?, error=?, mode=COALESCE(?,mode), done_at=? WHERE id=?",
                      (status, None if before is None else str(before), None if after is None else str(after),
                       error, mode, now_iso(), job_id))
+    j = q1("SELECT po_id FROM jobs WHERE id=?", job_id)
+    if j and j["po_id"]:
+        refresh_po_status(j["po_id"])   # a PO moves to partly received / received as its items are confirmed
     bump()
 
 
@@ -946,10 +1015,10 @@ def process_job(job):
         rescope()
         return job_finish(job["id"], "refused", error=why, mode=mode)
     kind = job["kind"]
-    if kind in ("receive", "adjust", "return"):
+    if kind in ("receive", "adjust", "return", "sale"):
         before = item["stock"]
         after = before + int(job["delta"])
-        if after < 0:
+        if after < 0 and kind != "sale":   # a sale on another marketplace already happened: record it, even oversold
             return job_finish(job["id"], "refused", before, after,
                               f"Would leave stock below zero (WooCommerce has {before})", mode)
         field, value = "stock_quantity", after
@@ -1253,7 +1322,8 @@ def link_barcode(body, by, operator):
         raise ApiError(400, "Only UPC, EAN or GTIN numbers (8, 12, 13 or 14 digits) can be saved as a product's barcode")
     if r["scope"] not in ("shop", "readonly"):
         raise ApiError(409, f"{label_name(r)} can't be changed: {r['why'] or r['scope']}")
-    other = q1("SELECT * FROM items WHERE gkey=? AND id!=?", gkey(code), r["id"])
+    other = q1("SELECT * FROM items WHERE gkey=? AND id!=?", gkey(code), r["id"]) or \
+        q1("SELECT i.* FROM alt_barcodes a JOIN items i ON i.id=a.item_id WHERE a.gkey=? AND a.item_id!=?", gkey(code), r["id"])
     if other:
         raise ApiError(409, f"Barcode {code} already belongs to {label_name(other)}"
                             + (f" (SKU {other['sku']})" if other["sku"] else ""))
@@ -1544,6 +1614,1465 @@ def check_double_restock(oid):
     return n
 
 
+# ---------------------------------------------------------------- purchasing: vendors, purchase orders, receiving, costs
+# Parts only: a PO can only hold in-shop products whose stock Wojtek Stock manages (never feed products or guns).
+# Receiving a PO adds stock through the same outbox as everything else (read live, change, read back, log), and records
+# what each unit cost, landed: its price plus its share of the receipt's freight and fees.
+PO_STATUSES = ("draft", "sent", "partial", "received", "closed", "cancelled")
+
+
+def _money(v, what, lo=0.0, hi=1_000_000.0):
+    try:
+        x = round(float(v), 4)
+    except (TypeError, ValueError):
+        raise ApiError(400, f"{what} should be an amount, such as 12.50")
+    if not lo <= x <= hi:
+        raise ApiError(400, f"{what} should be between {lo:g} and {hi:,.0f}")
+    return x
+
+
+def _text(v, most=200):
+    return re.sub(r"\s+", " ", str(v or "")).strip()[:most]
+
+
+def vendor_row(r):
+    d = dict(r)
+    d["openPos"] = q1("SELECT COUNT(*) n FROM pos WHERE vendor_id=? AND status IN ('draft','sent','partial')", r["id"])["n"]
+    d["items"] = q1("SELECT COUNT(*) n FROM vendor_items WHERE vendor_id=?", r["id"])["n"]
+    return d
+
+
+def list_vendors():
+    return [vendor_row(r) for r in q("SELECT * FROM vendors WHERE active=1 ORDER BY name COLLATE NOCASE")]
+
+
+def save_vendor(b, by=""):
+    name = _text(b.get("name"), 80)
+    if not name:
+        raise ApiError(400, "Give the vendor a name")
+    email = _text(b.get("email"), 120)
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ApiError(400, "That email address doesn't look right")
+    prefix = skey(b.get("feed_prefix"))[:12]
+    lead = b.get("lead_days")
+    lead = _int(lead, 0, 365, "Lead time (days)") if str(lead or "").strip() else None
+    auto = 1 if b.get("auto_send") else 0
+    if auto and not email:
+        raise ApiError(400, "Sending POs automatically needs the vendor's email address")
+    vals = (name, _text(b.get("account"), 60), _text(b.get("contact"), 80), email, _text(b.get("phone"), 40),
+            _text(b.get("terms"), 60), lead, prefix, _text(b.get("notes"), 500), auto)
+    vid = b.get("id")
+    other = q1("SELECT id FROM vendors WHERE name=? COLLATE NOCASE AND active=1 AND id!=?", name, int(vid or 0))
+    if other:
+        raise ApiError(409, f"There's already a vendor called {name}")
+    with DB_LOCK:
+        if vid:
+            if not q1("SELECT 1 FROM vendors WHERE id=?", int(vid)):
+                raise ApiError(404, "No such vendor")
+            conn.execute("UPDATE vendors SET name=?, account=?, contact=?, email=?, phone=?, terms=?, lead_days=?, feed_prefix=?, "
+                         "notes=?, auto_send=? WHERE id=?", vals + (int(vid),))
+        else:
+            vid = conn.execute("INSERT INTO vendors(name,account,contact,email,phone,terms,lead_days,feed_prefix,notes,auto_send,"
+                               "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", vals + (now_iso(),)).lastrowid
+    note_change("vendor", "saved", name, by=by)
+    bump()
+    return vendor_row(q1("SELECT * FROM vendors WHERE id=?", int(vid)))
+
+
+def remove_vendor(vid, by=""):
+    v = q1("SELECT * FROM vendors WHERE id=? AND active=1", vid)
+    if not v:
+        raise ApiError(404, "No such vendor")
+    if q1("SELECT 1 FROM pos WHERE vendor_id=? AND status IN ('draft','sent','partial')", vid):
+        raise ApiError(409, f"{v['name']} has open purchase orders: close or cancel them first")
+    with DB_LOCK:
+        conn.execute("UPDATE vendors SET active=0 WHERE id=?", (vid,))
+    note_change("vendor", "removed", v["name"], by=by)
+    bump()
+
+
+def vendor_for_feed(sku):
+    """The vendor whose feed prefix this SKU starts with, if one is set."""
+    s = skey(sku)
+    best = None
+    for v in q("SELECT * FROM vendors WHERE active=1 AND feed_prefix!=''"):
+        if s.startswith(v["feed_prefix"]) and (not best or len(v["feed_prefix"]) > len(best["feed_prefix"])):
+            best = v
+    return best
+
+
+def remember_vendor_item(vendor_id, item_id, vendor_sku=None, cost=None):
+    old = q1("SELECT * FROM vendor_items WHERE vendor_id=? AND item_id=?", vendor_id, item_id)
+    vs = vendor_sku if vendor_sku is not None else (old["vendor_sku"] if old else "")
+    c = cost if cost is not None else (old["last_cost"] if old else None)
+    with DB_LOCK:
+        conn.execute("INSERT OR REPLACE INTO vendor_items(vendor_id,item_id,vendor_sku,last_cost,updated_at) VALUES(?,?,?,?,?)",
+                     (vendor_id, item_id, vs or "", c, now_iso()))
+
+
+def line_progress(line_id):
+    """(received, on its way): received = changes WooCommerce confirmed; on its way = still in the outbox."""
+    r = q1("SELECT COALESCE(SUM(CASE WHEN j.status='done' THEN rl.qty END),0) got, "
+           "COALESCE(SUM(CASE WHEN j.status IN ('pending','working') THEN rl.qty END),0) going "
+           "FROM receipt_lines rl JOIN jobs j ON j.id=rl.job_id WHERE rl.po_line_id=?", line_id)
+    return r["got"], r["going"]
+
+
+def po_out(p, full=True):
+    v = q1("SELECT * FROM vendors WHERE id=?", p["vendor_id"])
+    d = dict(p)
+    d["vendor"] = v["name"] if v else "(removed vendor)"
+    lines = q("SELECT * FROM po_lines WHERE po_id=? ORDER BY id", p["id"])
+    out, total, open_units = [], 0.0, 0
+    for ln in lines:
+        got, going = line_progress(ln["id"])
+        left = max(0, ln["qty"] - got - going - ln["cancelled"])
+        it = q1("SELECT stock, scope, gtin FROM items WHERE id=?", ln["item_id"])
+        e = dict(ln, received=got, receiving=going, open=left, stock=it["stock"] if it else None,
+                 scope=it["scope"] if it else "gone", gtin=it["gtin"] if it else "")
+        total += (ln["qty"] - ln["cancelled"]) * (ln["cost"] or 0)
+        open_units += left
+        out.append(e)
+    d.update(total=round(total, 2), open=open_units, units=sum(x["qty"] - x["cancelled"] for x in out), lineCount=len(out))
+    if full:
+        d["lines"] = out
+        d["vendorInfo"] = dict(v) if v else None
+        d["receipts"] = []
+        for rc in q("SELECT * FROM receipts WHERE po_id=? ORDER BY id", p["id"]):
+            rls = [dict(x, status=(q1("SELECT status FROM jobs WHERE id=?", x["job_id"]) or {"status": "?"})["status"],
+                        name=(q1("SELECT name FROM po_lines WHERE id=?", x["po_line_id"]) or {"name": ""})["name"])
+                   for x in q("SELECT * FROM receipt_lines WHERE receipt_id=? ORDER BY id", rc["id"])]
+            d["receipts"].append(dict(rc, lines=rls))
+    return d
+
+
+def refresh_po_status(po_id):
+    """Sent POs move to partly received, received, or back, from what's actually been received."""
+    p = q1("SELECT * FROM pos WHERE id=?", po_id)
+    if not p or p["status"] in ("draft", "cancelled", "closed"):
+        return
+    d = po_out(p, full=False)
+    lines = q("SELECT * FROM po_lines WHERE po_id=?", po_id)
+    got_any = any(line_progress(x["id"])[0] for x in lines)
+    status = "received" if d["open"] == 0 and not any(line_progress(x["id"])[1] for x in lines) and got_any else \
+        "partial" if got_any else "sent"
+    if status != p["status"]:
+        with DB_LOCK:
+            conn.execute("UPDATE pos SET status=?, updated_at=?, closed_at=? WHERE id=?",
+                         (status, now_iso(), now_iso() if status == "received" else None, po_id))
+        bump()
+
+
+def list_pos(status="", vendor=0):
+    where, args = ["1=1"], []
+    if status == "open":
+        where.append("status IN ('draft','sent','partial')")
+    elif status in PO_STATUSES:
+        where.append("status=?")
+        args.append(status)
+    if vendor:
+        where.append("vendor_id=?")
+        args.append(vendor)
+    return [po_out(p, full=False) for p in q(f"SELECT * FROM pos WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 500", *args)]
+
+
+def get_po(pid=0, number=""):
+    if number:
+        n = skey(number)
+        m = re.fullmatch(r"PO-?(\d+)", n)
+        p = q1("SELECT * FROM pos WHERE number=?", f"PO-{int(m.group(1)):04d}" if m else n)
+    else:
+        p = q1("SELECT * FROM pos WHERE id=?", pid)
+    if not p:
+        raise ApiError(404, f"No purchase order {number or pid}")
+    refresh_po_status(p["id"])
+    return po_out(q1("SELECT * FROM pos WHERE id=?", p["id"]))
+
+
+def _po_item(item_id):
+    r = _item(item_id)
+    if r["scope"] != "shop":
+        raise ApiError(409, f"{label_name(r)} can't go on a purchase order: {r['why'] or r['scope']}")
+    return r
+
+
+def save_po(b, by=""):
+    """Create a draft PO, or change one that's still a draft (vendor, lines, notes)."""
+    vid = _int(b.get("vendor_id"), 1, 10 ** 9, "Vendor")
+    v = q1("SELECT * FROM vendors WHERE id=? AND active=1", vid)
+    if not v:
+        raise ApiError(400, "Pick a vendor")
+    lines = b.get("lines") or []
+    if not isinstance(lines, list) or len(lines) > 500:
+        raise ApiError(400, "Up to 500 lines on a purchase order")
+    clean, seen = [], set()
+    for ln in lines:
+        r = _po_item(ln.get("item_id"))
+        if r["id"] in seen:
+            raise ApiError(400, f"{label_name(r)} is on the PO twice")
+        seen.add(r["id"])
+        clean.append((r, _int(ln.get("qty"), 1, 100000, "Quantity"), _money(ln.get("cost") or 0, "Cost"),
+                      _text(ln.get("vendor_sku"), 60)))
+    notes = _text(b.get("notes"), 1000)
+    pid = b.get("id")
+    with Tx() as c:
+        if pid:
+            p = c.execute("SELECT * FROM pos WHERE id=?", (int(pid),)).fetchone()
+            if not p:
+                raise ApiError(404, "No such purchase order")
+            if p["status"] != "draft":
+                raise ApiError(409, f"{p['number']} has been sent: only drafts can be changed")
+            c.execute("UPDATE pos SET vendor_id=?, notes=?, updated_at=? WHERE id=?", (vid, notes, now_iso(), p["id"]))
+            c.execute("DELETE FROM po_lines WHERE po_id=?", (p["id"],))
+            pid = p["id"]
+        else:
+            n = int(meta_get("po_next", 1) or 1)
+            meta_set("po_next", n + 1)
+            pid = c.execute("INSERT INTO pos(number,vendor_id,status,notes,created_at,created_by,updated_at) VALUES(?,?,?,?,?,?,?)",
+                            (f"PO-{n:04d}", vid, "draft", notes, now_iso(), by, now_iso())).lastrowid
+        for r, qty, cost, vsku in clean:
+            c.execute("INSERT INTO po_lines(po_id,item_id,name,sku,vendor_sku,qty,cost) VALUES(?,?,?,?,?,?,?)",
+                      (pid, r["id"], label_name(r), r["sku"], vsku, qty, cost))
+    for r, qty, cost, vsku in clean:
+        remember_vendor_item(vid, r["id"], vsku, cost or None)
+    bump()
+    return get_po(pid)
+
+
+def po_action(b, by=""):
+    p = q1("SELECT * FROM pos WHERE id=?", _int(b.get("id"), 1, 10 ** 9, "PO"))
+    if not p:
+        raise ApiError(404, "No such purchase order")
+    act = b.get("action")
+    now = now_iso()
+    if act == "send":
+        if p["status"] != "draft":
+            raise ApiError(409, f"{p['number']} isn't a draft")
+        if not q1("SELECT 1 FROM po_lines WHERE po_id=?", p["id"]):
+            raise ApiError(400, "Add something to order first")
+        with DB_LOCK:
+            conn.execute("UPDATE pos SET status='sent', sent_at=?, updated_at=? WHERE id=?", (now, now, p["id"]))
+    elif act == "unsend":
+        if p["status"] != "sent" or q1("SELECT 1 FROM receipts WHERE po_id=?", p["id"]):
+            raise ApiError(409, "Only a sent PO with nothing received can go back to draft")
+        with DB_LOCK:
+            conn.execute("UPDATE pos SET status='draft', sent_at=NULL, updated_at=? WHERE id=?", (now, p["id"]))
+    elif act == "cancel":
+        if p["status"] not in ("draft", "sent") or q1("SELECT 1 FROM receipts WHERE po_id=?", p["id"]):
+            raise ApiError(409, "A PO with something received can't be cancelled: close what's left instead")
+        with DB_LOCK:
+            conn.execute("UPDATE pos SET status='cancelled', closed_at=?, updated_at=? WHERE id=?", (now, now, p["id"]))
+    elif act == "close":   # the vendor won't send the rest: cancel what's still open, keep what came
+        if p["status"] not in ("sent", "partial"):
+            raise ApiError(409, "Only a sent or partly received PO can be closed")
+        if any(line_progress(x["id"])[1] for x in q("SELECT id FROM po_lines WHERE po_id=?", p["id"])):
+            raise ApiError(409, "Some received items are still being saved to WooCommerce: wait a moment")
+        with Tx() as c:
+            for ln in c.execute("SELECT * FROM po_lines WHERE po_id=?", (p["id"],)).fetchall():
+                got, _ = line_progress(ln["id"])
+                c.execute("UPDATE po_lines SET cancelled=? WHERE id=?", (max(0, ln["qty"] - got), ln["id"]))
+            c.execute("UPDATE pos SET status='closed', closed_at=?, updated_at=? WHERE id=?", (now, now, p["id"]))
+    else:
+        raise ApiError(400, "Unknown action")
+    note_change("po", act, p["number"], by=by)
+    bump()
+    return get_po(p["id"])
+
+
+def allocate_landed(lines, extra_cost):
+    """Spread freight and fees over the received lines by their value (by quantity when nothing has a price).
+    lines: [(qty, unit_cost)] -> landed unit cost for each."""
+    value = sum(qn * c for qn, c in lines)
+    units = sum(qn for qn, _ in lines)
+    out = []
+    for qn, c in lines:
+        share = (qn * c / value) if value > 0 else (qn / units if units else 0)
+        out.append(round(c + (extra_cost * share / qn if qn else 0), 4))
+    return out
+
+
+def receive_po(b, by, operator):
+    """Receive some or all of a PO: stock goes up through the outbox, and each unit's landed cost is recorded."""
+    check_can_write()
+    p = q1("SELECT * FROM pos WHERE id=?", _int(b.get("id"), 1, 10 ** 9, "PO"))
+    if not p:
+        raise ApiError(404, "No such purchase order")
+    if p["status"] not in ("sent", "partial"):
+        raise ApiError(409, f"{p['number']} is {p['status']}: only a sent PO can be received" +
+                       (" (mark it sent first)" if p["status"] == "draft" else ""))
+    want = b.get("lines") or []
+    extras = b.get("extras") or []
+    if not isinstance(want, list) or not isinstance(extras, list) or not (want or extras) or len(want) + len(extras) > 500:
+        raise ApiError(400, "Scan what arrived first")
+    freight, fees = _money(b.get("freight") or 0, "Freight"), _money(b.get("fees") or 0, "Fees")
+    rows, seen = [], set()   # (po_line or None, item row, qty, unit cost)
+    for ln in want:
+        line = q1("SELECT * FROM po_lines WHERE id=? AND po_id=?", _int(ln.get("line_id"), 1, 10 ** 12, "Line"), p["id"])
+        if not line:
+            raise ApiError(400, f"That line isn't on {p['number']}")
+        if line["id"] in seen:
+            raise ApiError(400, f"{line['name']} is listed twice")
+        seen.add(line["id"])
+        qty = _int(ln.get("qty"), 1, 100000, "Quantity")
+        got, going = line_progress(line["id"])
+        left = line["qty"] - got - going - line["cancelled"]
+        if qty > left:
+            raise ApiError(409, f"Only {max(0, left)} of {line['name']} are still due on {p['number']} "
+                                f"({line['qty']} ordered, {got + going} received)")
+        rows.append((line, _po_item(line["item_id"]), qty, line["cost"] or 0.0))
+    for ex in extras:   # arrived but wasn't ordered: added to the PO as an extra line
+        r = _po_item(ex.get("item_id"))
+        rows.append((None, r, _int(ex.get("qty"), 1, 100000, "Quantity"), _money(ex.get("cost") or 0, "Cost")))
+    landed = allocate_landed([(qn, c) for _, _, qn, c in rows], freight + fees)
+    batch, at = uuid.uuid4().hex[:10], now_iso()
+    with Tx() as c:
+        rid = c.execute("INSERT INTO receipts(po_id,batch,at,by,freight,fees,invoice,note,mode) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (p["id"], batch, at, by, freight, fees, _text(b.get("invoice"), 60), _text(b.get("note"), 500),
+                         CFG["woo_write"])).lastrowid
+        for (line, r, qty, cost), lu in zip(rows, landed):
+            if line is None:
+                lid = c.execute("INSERT INTO po_lines(po_id,item_id,name,sku,vendor_sku,qty,cost,extra) VALUES(?,?,?,?,?,?,?,1)",
+                                (p["id"], r["id"], label_name(r), r["sku"], "", qty, cost)).lastrowid
+            else:
+                lid = line["id"]
+            jid = c.execute("""INSERT INTO jobs(batch,at,kind,item_id,parent_id,name,sku,delta,reason,note,by,operator,status,mode,
+                               po_id,po_number) VALUES(?,?,'receive',?,?,?,?,?,?,?,?,?,'pending',?,?,?)""",
+                            (batch, at, r["id"], r["parent_id"] or 0, label_name(r), r["sku"], qty, f"Received on {p['number']}",
+                             _text(b.get("invoice"), 60) and f"Invoice {_text(b.get('invoice'), 60)}" or "", by, operator,
+                             CFG["woo_write"], p["id"], p["number"])).lastrowid
+            c.execute("INSERT INTO receipt_lines(receipt_id,po_line_id,item_id,qty,unit_cost,landed_unit,job_id) VALUES(?,?,?,?,?,?,?)",
+                      (rid, lid, r["id"], qty, cost, lu, jid))
+    for (line, r, qty, cost), _ in zip(rows, landed):
+        remember_vendor_item(p["vendor_id"], r["id"], None, cost or None)
+    _worker_wake.set()
+    bump()
+    return {"batch": batch, "receipt": rid, "po": p["number"]}
+
+
+def item_costs(item_id):
+    """Last and average landed cost (from receipts WooCommerce confirmed), vendors, and what's on order."""
+    rows = q("SELECT rl.qty, rl.landed_unit, rl.unit_cost, r.at FROM receipt_lines rl JOIN receipts r ON r.id=rl.receipt_id "
+             "JOIN jobs j ON j.id=rl.job_id WHERE rl.item_id=? AND j.status='done' ORDER BY rl.id", item_id)
+    units = sum(r["qty"] for r in rows)
+    avg = round(sum(r["qty"] * r["landed_unit"] for r in rows) / units, 4) if units else None
+    last = rows[-1] if rows else None
+    vendors = [dict(v) for v in q("SELECT vi.vendor_id, v.name, vi.vendor_sku, vi.last_cost FROM vendor_items vi "
+                                  "JOIN vendors v ON v.id=vi.vendor_id WHERE vi.item_id=? AND v.active=1 ORDER BY v.name", item_id)]
+    on_order = 0
+    for ln in q("SELECT pl.* FROM po_lines pl JOIN pos p ON p.id=pl.po_id WHERE pl.item_id=? AND p.status IN ('sent','partial')", item_id):
+        got, going = line_progress(ln["id"])
+        on_order += max(0, ln["qty"] - got - going - ln["cancelled"])
+    return {"lastCost": last["landed_unit"] if last else None, "lastPrice": last["unit_cost"] if last else None,
+            "lastAt": last["at"] if last else None, "avgCost": avg, "received": units, "vendors": vendors, "onOrder": on_order}
+
+
+# ---------------------------------------------------------------- QR codes and PDFs on the server (purchase orders sent by email)
+# The page's own QR encoder, ported: byte mode, error correction M, versions 1-6, up to 106 bytes.
+_QR_EXP, _QR_LOG = [0] * 512, [0] * 256
+_x = 1
+for _i in range(255):
+    _QR_EXP[_i] = _x
+    _QR_LOG[_x] = _i
+    _x <<= 1
+    if _x & 256:
+        _x ^= 0x11D
+for _i in range(255, 512):
+    _QR_EXP[_i] = _QR_EXP[_i - 255]
+_QR_SPEC = {1: (1, 16, 10, [], 14), 2: (1, 28, 16, [6, 18], 26), 3: (1, 44, 26, [6, 22], 42),
+            4: (2, 32, 18, [6, 26], 62), 5: (2, 43, 24, [6, 30], 84), 6: (4, 27, 16, [6, 34], 106)}
+
+
+def _qr_mul(a, b):
+    return _QR_EXP[_QR_LOG[a] + _QR_LOG[b]] if a and b else 0
+
+
+def _qr_ec(data, n):
+    g = [1]
+    for i in range(n):
+        ng = [0] * (len(g) + 1)
+        for j, c in enumerate(g):
+            ng[j] ^= c
+            ng[j + 1] ^= _qr_mul(c, _QR_EXP[i])
+        g = ng
+    r = list(data) + [0] * n
+    for i in range(len(data)):
+        c = r[i]
+        if c:
+            for j in range(len(g)):
+                r[i + j] ^= _qr_mul(g[j], c)
+    return r[len(data):]
+
+
+def qr_encode(text):
+    """A square list of rows of booleans (True = dark), without the quiet zone."""
+    data_bytes = str(text).encode("utf-8")
+    ver = next((v for v in sorted(_QR_SPEC) if _QR_SPEC[v][4] >= len(data_bytes)), None)
+    if not ver:
+        raise ValueError("Too long for a QR code (106 characters at most)")
+    nb, dpb, epb, align, _ = _QR_SPEC[ver]
+    cap = nb * dpb
+    bits = []
+
+    def put(v, n):
+        for i in range(n - 1, -1, -1):
+            bits.append((v >> i) & 1)
+    put(4, 4)
+    put(len(data_bytes), 8)
+    for b in data_bytes:
+        put(b, 8)
+    for _ in range(4):
+        if len(bits) < cap * 8:
+            bits.append(0)
+    while len(bits) % 8:
+        bits.append(0)
+    data = [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+    p = 0
+    while len(data) < cap:
+        data.append(0x11 if p % 2 else 0xEC)
+        p += 1
+    blocks = [data[b * dpb:(b + 1) * dpb] for b in range(nb)]
+    ecs = [_qr_ec(d, epb) for d in blocks]
+    seq = [d[i] for i in range(dpb) for d in blocks] + [e[i] for i in range(epb) for e in ecs]
+    size = 17 + 4 * ver
+    mod = [[False] * size for _ in range(size)]
+    fn = [[False] * size for _ in range(size)]
+
+    def setm(r, c, v):
+        mod[r][c] = v
+        fn[r][c] = True
+
+    def finder(r0, c0):
+        for r in range(-1, 8):
+            for c in range(-1, 8):
+                rr, cc = r0 + r, c0 + c
+                if rr < 0 or cc < 0 or rr >= size or cc >= size:
+                    continue
+                ring = max(abs(r - 3), abs(c - 3))
+                setm(rr, cc, 0 <= r <= 6 and 0 <= c <= 6 and ring != 2)
+    finder(0, 0)
+    finder(0, size - 7)
+    finder(size - 7, 0)
+    for i in range(8, size - 8):
+        setm(6, i, i % 2 == 0)
+        setm(i, 6, i % 2 == 0)
+    if align:
+        a = align[1]
+        for r in range(-2, 3):
+            for c in range(-2, 3):
+                setm(a + r, a + c, max(abs(r), abs(c)) != 1)
+    setm(size - 8, 8, True)
+    for i in range(9):
+        fn[8][i] = fn[i][8] = True
+    for i in range(8):
+        fn[8][size - 1 - i] = fn[size - 1 - i][8] = True
+    allbits = [(cw >> i) & 1 for cw in seq for i in range(7, -1, -1)]
+    k, up, col = 0, True, size - 1
+    while col > 0:
+        if col == 6:
+            col -= 1
+        for n in range(size):
+            r = size - 1 - n if up else n
+            for c in (col, col - 1):
+                if not fn[r][c]:
+                    mod[r][c] = bool(allbits[k]) if k < len(allbits) else False
+                    k += 1
+        up = not up
+        col -= 2
+    masks = [lambda r, c: (r + c) % 2 == 0, lambda r, c: r % 2 == 0, lambda r, c: c % 3 == 0,
+             lambda r, c: (r + c) % 3 == 0, lambda r, c: (r // 2 + c // 3) % 2 == 0,
+             lambda r, c: (r * c) % 2 + (r * c) % 3 == 0, lambda r, c: ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+             lambda r, c: ((r + c) % 2 + (r * c) % 3) % 2 == 0]
+
+    def format_bits(m):
+        d = (0 << 3) | m
+        v = d << 10
+        for i in range(14, 9, -1):
+            if (v >> i) & 1:
+                v ^= 0x537 << (i - 10)
+        return ((d << 10) | v) ^ 0x5412
+
+    def with_mask(m):
+        g = [[v if fn[r][c] else (v != masks[m](r, c)) for c, v in enumerate(row)] for r, row in enumerate(mod)]
+        f = format_bits(m)
+        bit = lambda i: ((f >> i) & 1) == 1
+        for i in range(6):
+            g[8][i] = bit(14 - i)
+        g[8][7], g[8][8], g[7][8] = bit(8), bit(7), bit(6)
+        for i in range(9, 15):
+            g[14 - i][8] = bit(14 - i)
+        for i in range(8):
+            g[size - 1 - i][8] = bit(14 - i)
+        for i in range(7, 15):   # the second copy along the top right: 8 cells (size-8 .. size-1)
+            g[8][size - 15 + i] = bit(14 - i)
+        g[size - 8][8] = True
+        return g
+
+    def penalty(g):
+        p = 0
+        for pass_ in range(2):
+            for i in range(size):
+                run = 1
+                for j in range(1, size):
+                    a = g[j][i] if pass_ else g[i][j]
+                    b = g[j - 1][i] if pass_ else g[i][j - 1]
+                    if a == b:
+                        run += 1
+                        if run == 5:
+                            p += 3
+                        elif run > 5:
+                            p += 1
+                    else:
+                        run = 1
+        for r in range(size - 1):
+            for c in range(size - 1):
+                v = g[r][c]
+                if v == g[r][c + 1] == g[r + 1][c] == g[r + 1][c + 1]:
+                    p += 3
+        pat = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0]
+        pats = (pat, pat[::-1])
+        for i in range(size):
+            for j in range(size - 10):
+                for pt in pats:
+                    if all(int(g[i][j + k_]) == b for k_, b in enumerate(pt)):
+                        p += 40
+                    if all(int(g[j + k_][i]) == b for k_, b in enumerate(pt)):
+                        p += 40
+        dark = sum(v for row in g for v in row)
+        return p + int(abs(dark * 20 / (size * size) - 10)) * 10
+
+    best = None
+    for m in range(8):
+        g = with_mask(m)
+        s = penalty(g)
+        if best is None or s < best[0]:
+            best = (s, g)
+    return best[1]
+
+
+# Helvetica (regular) widths, characters 32-126; Helvetica-Bold is _HB_W above; Courier is 600 throughout
+_H_W = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556,
+        556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833,
+        722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556,
+        556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334,
+        260, 334, 584]
+_PDF_SUBS = {"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u2026": "...",
+             "\u00d7": "x", "\u2022": "*"}
+
+
+def pdf_str(s):
+    out = []
+    for ch in str(s):
+        ch = _PDF_SUBS.get(ch, ch)
+        for c in ch:
+            o = ord(c)
+            if c in "()\\":
+                out.append("\\" + c)
+            elif 32 <= o < 127:
+                out.append(c)
+            elif 160 <= o < 256:
+                out.append("\\%03o" % o)
+            else:
+                out.append("?")
+    return "".join(out)
+
+
+def text_w(s, font, size):
+    """Width in mm. font: B (Helvetica-Bold), R (Helvetica), M (Courier)."""
+    tbl = _HB_W if font == "B" else _H_W if font == "R" else None
+    w = 0
+    for ch in str(s):
+        ch = _PDF_SUBS.get(ch, ch)[:1] or " "
+        o = ord(ch)
+        w += (tbl[o - 32] if 32 <= o <= 126 else 556) if tbl else 600
+    return w * size / 1000 * 25.4 / 72
+
+
+def wrap_mm(s, font, size, width):
+    lines, cur = [], ""
+    for w in str(s or "").split():
+        while text_w(w, font, size) > width and len(w) > 1:
+            k = len(w)
+            while k > 1 and text_w(w[:k], font, size) > width:
+                k -= 1
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.append(w[:k])
+            w = w[k:]
+        t = f"{cur} {w}" if cur else w
+        if text_w(t, font, size) <= width:
+            cur = t
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def fit_mm(s, font, size, width):
+    s = str(s or "")
+    while len(s) > 1 and text_w(s, font, size) > width:
+        s = s[:-1]
+    return s
+
+
+class PdfPage:
+    FONTS = {"B": "F1", "R": "F2", "M": "F3"}
+
+    def __init__(self, w, h):
+        self.w, self.h, self.ops = w, h, ["0 g"]
+
+    @staticmethod
+    def pt(mm):
+        return round(mm * 72 / 25.4, 3)
+
+    def rect(self, x, y, w, h):
+        self.ops.append(f"{self.pt(x)} {self.pt(self.h - y - h)} {self.pt(w)} {self.pt(h)} re f")
+
+    def text(self, x, y, s, size, font="R", align="left"):
+        w = text_w(s, font, size)
+        left = x - w / 2 if align == "center" else x - w if align == "right" else x
+        self.ops.append(f"BT /{self.FONTS[font]} {size:.2f} Tf 1 0 0 1 {self.pt(left)} {self.pt(self.h - y)} Tm ({pdf_str(s)}) Tj ET")
+
+    def qr(self, s, x, y, side):
+        g = qr_encode(s)
+        n = len(g)
+        m = side / (n + 2)
+        for r, row in enumerate(g):
+            c = 0
+            while c < n:
+                if not row[c]:
+                    c += 1
+                    continue
+                e = c
+                while e < n and row[e]:
+                    e += 1
+                self.rect(x + (c + 1) * m, y + (r + 1) * m, (e - c) * m + 0.01, m + 0.01)
+                c = e
+
+
+def build_pdf(pages):
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", None,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>"]
+    kids = []
+    for p in pages:
+        ops = "\n".join(p.ops) + "\n"
+        objs.append(f"<< /Length {len(ops)} >>\nstream\n{ops}endstream")
+        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PdfPage.pt(p.w)} {PdfPage.pt(p.h)}] "
+                    f"/Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents {len(objs)} 0 R >>")
+        kids.append(f"{len(objs)} 0 R")
+    objs[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    out, offs = "%PDF-1.4\n", []
+    for i, ob in enumerate(objs):
+        offs.append(len(out))
+        out += f"{i + 1} 0 obj\n{ob}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n" + "".join(f"{n:010d} 00000 n \n" for n in offs)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    return out.encode("latin-1")
+
+
+# ---------------------------------------------------------------- reorder points: parts that need ordering, drafted automatically
+def on_order_qty(item_id):
+    """Units coming: still due on sent or partly received POs, plus what's on draft POs (so a part is never drafted twice)."""
+    n = 0
+    for ln in q("SELECT pl.*, p.status FROM po_lines pl JOIN pos p ON p.id=pl.po_id WHERE pl.item_id=? "
+                "AND p.status IN ('draft','sent','partial')", item_id):
+        if ln["status"] == "draft":
+            n += ln["qty"]
+        else:
+            got, going = line_progress(ln["id"])
+            n += max(0, ln["qty"] - got - going - ln["cancelled"])
+    return n
+
+
+def reorder_vendor(item_id, preferred):
+    """The vendor to order a part from: the one set for it, else the one it was last bought from or priced by."""
+    if preferred and q1("SELECT 1 FROM vendors WHERE id=? AND active=1", preferred):
+        return preferred
+    r = q1("SELECT vi.vendor_id FROM vendor_items vi JOIN vendors v ON v.id=vi.vendor_id WHERE vi.item_id=? AND v.active=1 "
+           "ORDER BY vi.updated_at DESC LIMIT 1", item_id)
+    return r["vendor_id"] if r else None
+
+
+def reorder_status():
+    """Every part with a reorder point: stock, what's coming, and whether it needs ordering (and how many)."""
+    out = []
+    names = {v["id"]: v["name"] for v in q("SELECT id, name FROM vendors WHERE active=1")}
+    for r in q("SELECT ro.*, i.name, i.attrs, i.sku, i.stock, i.scope FROM reorder ro JOIN items i ON i.id=ro.item_id "
+               "ORDER BY i.name COLLATE NOCASE, i.attrs"):
+        coming = on_order_qty(r["item_id"])
+        stock = r["stock"] or 0
+        need = max(0, (r["max_qty"] or 0) - (stock + coming)) if stock + coming <= (r["min_qty"] or 0) else 0
+        vid = reorder_vendor(r["item_id"], r["vendor_id"])
+        out.append({"item_id": r["item_id"], "name": r["name"] + (f" ({r['attrs']})" if r["attrs"] else ""), "sku": r["sku"],
+                    "stock": r["stock"], "min": r["min_qty"], "max": r["max_qty"], "coming": coming, "need": need,
+                    "vendor_id": vid, "vendor": names.get(vid, ""), "setVendor": r["vendor_id"], "scope": r["scope"]})
+    return out
+
+
+def set_reorder(rows, by=""):
+    """[{item_id, min, max, vendor_id}]: min blank (or max 0) clears the part's reorder point."""
+    if not isinstance(rows, list) or not rows or len(rows) > 2000:
+        raise ApiError(400, "Nothing to save")
+    done = 0
+    for x in rows:
+        r = _po_item(x.get("item_id"))
+        if str(x.get("min", "")).strip() == "" or str(x.get("max", "")).strip() in ("", "0"):
+            with DB_LOCK:
+                conn.execute("DELETE FROM reorder WHERE item_id=?", (r["id"],))
+            done += 1
+            continue
+        lo = _int(x.get("min"), 0, 100000, "Reorder point")
+        hi = _int(x.get("max"), 1, 100000, "Order up to")
+        if hi <= lo:
+            raise ApiError(400, f"{label_name(r)}: the order-up-to level should be more than the reorder point")
+        vid = x.get("vendor_id") or None
+        if vid and not q1("SELECT 1 FROM vendors WHERE id=? AND active=1", int(vid)):
+            raise ApiError(400, "No such vendor")
+        with DB_LOCK:
+            conn.execute("INSERT OR REPLACE INTO reorder(item_id,min_qty,max_qty,vendor_id,updated_at,by) VALUES(?,?,?,?,?,?)",
+                         (r["id"], lo, hi, int(vid) if vid else None, now_iso(), by))
+        done += 1
+    note_change("reorder", "saved", f"{done} part{'s' if done != 1 else ''}", by=by)
+    bump()
+    return {"saved": done}
+
+
+REORDER_LOCK = threading.Lock()
+
+
+def reorder_run(by="Wojtek Stock (reorder points)"):
+    """Parts at or below their reorder point go on their vendor's automatic draft PO, up to their order-up-to level.
+    One automatic draft per vendor collects them until it's sent. Never twice: what's on any open PO counts as coming."""
+    with REORDER_LOCK:
+        added, nov = {}, []
+        for r in reorder_status():
+            if not r["need"] or r["scope"] != "shop":
+                continue
+            if not r["vendor_id"]:
+                nov.append(r["name"])
+                continue
+            vid = r["vendor_id"]
+            po = q1("SELECT * FROM pos WHERE vendor_id=? AND status='draft' AND auto=1 ORDER BY id LIMIT 1", vid)
+            if not po:
+                n = int(meta_get("po_next", 1) or 1)
+                meta_set("po_next", n + 1)
+                with DB_LOCK:
+                    pid = conn.execute("INSERT INTO pos(number,vendor_id,status,notes,created_at,created_by,updated_at,auto) "
+                                       "VALUES(?,?,'draft','',?,?,?,1)", (f"PO-{n:04d}", vid, now_iso(), by, now_iso())).lastrowid
+                po = q1("SELECT * FROM pos WHERE id=?", pid)
+            vi = q1("SELECT * FROM vendor_items WHERE vendor_id=? AND item_id=?", vid, r["item_id"])
+            it = _item(r["item_id"])
+            with DB_LOCK:
+                conn.execute("INSERT INTO po_lines(po_id,item_id,name,sku,vendor_sku,qty,cost) VALUES(?,?,?,?,?,?,?)",
+                             (po["id"], it["id"], label_name(it), it["sku"], vi["vendor_sku"] if vi else "", r["need"],
+                              (vi["last_cost"] if vi else None) or 0))
+                conn.execute("UPDATE pos SET updated_at=? WHERE id=?", (now_iso(), po["id"]))
+            added.setdefault(po["number"], 0)
+            added[po["number"]] += 1
+        if added:
+            log.info("Reorder points: drafted %s", ", ".join(f"{k} (+{v})" for k, v in added.items()))
+            bump()
+        return {"drafted": added, "noVendor": nov}
+
+
+def reorder_suggest(days=90):
+    """Reorder levels from the last `days` of sales: enough to cover the vendor's lead time plus a week, then a month."""
+    days = max(14, min(365, int(days)))
+    after = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    sold = {}
+    for o in woo_pages("/orders", {"after": after, "dates_are_gmt": "true", "_fields": "id,status,line_items"}):
+        if o.get("status") in ("cancelled", "failed", "refunded", "trash", "checkout-draft", "pending"):
+            continue
+        for li in o.get("line_items") or []:
+            iid = int(li.get("variation_id") or 0) or int(li.get("product_id") or 0)
+            sold[iid] = sold.get(iid, 0) + int(li.get("quantity") or 0)
+    out = []
+    for iid, n in sold.items():
+        r = q1("SELECT * FROM items WHERE id=? AND scope='shop'", iid)
+        if not r or n <= 0:
+            continue
+        vid = reorder_vendor(iid, (q1("SELECT vendor_id FROM reorder WHERE item_id=?", iid) or {"vendor_id": None})["vendor_id"])
+        lead = (q1("SELECT lead_days FROM vendors WHERE id=?", vid) or {"lead_days": None})["lead_days"] if vid else None
+        lead = lead if lead is not None else 7
+        daily = n / days
+        lo = max(1, -(-daily * (lead + 7) // 1))
+        hi = max(lo + 1, lo + -(-daily * 30 // 1))
+        cur = q1("SELECT * FROM reorder WHERE item_id=?", iid)
+        out.append({"item_id": iid, "name": label_name(r), "sku": r["sku"], "stock": r["stock"], "sold": n, "days": days,
+                    "min": int(lo), "max": int(hi), "lead": lead, "curMin": cur["min_qty"] if cur else None,
+                    "curMax": cur["max_qty"] if cur else None})
+    out.sort(key=lambda x: -x["sold"])
+    return {"rows": out, "days": days}
+
+
+# ---------------------------------------------------------------- purchase orders as PDFs, and by email
+def po_pdf(po):
+    """The PO as a PDF: letterhead, vendor, ship-to, lines, total, notes, and a QR code of its number for receiving."""
+    v = po.get("vendorInfo") or {"name": po.get("vendor", "")}
+    lines = [{"name": l["name"], "sku": l["sku"] or "", "vendor_sku": l["vendor_sku"] or "", "qty": l["qty"] - l["cancelled"],
+              "cost": l["cost"] or 0} for l in po["lines"]]
+    shop_addr = [x.strip() for x in CFG["shop_address"].split("|") if x.strip()]
+    W, H, M = 215.9, 279.4, 16
+    pages = []
+    cols = [(M, "Their part #", None), (M + 32, "Our SKU", None), (M + 64, "Description", None), (W - M - 50, "Qty", "right"),
+            (W - M - 22, "Unit", "right"), (W - M, "Total", "right")]
+    money_s = lambda x: f"${x:,.2f}"
+    st = {}
+
+    def head():
+        pg = PdfPage(W, H)
+        pages.append(pg)
+        y = M
+        pg.text(M, y + 6, CFG["shop_name"], 16, "B")
+        yy = y + 12
+        for t in shop_addr + [" · ".join(x for x in (CFG["shop_phone"], CFG["shop_email"]) if x)]:
+            if t:
+                pg.text(M, yy, t, 9, "R")
+                yy += 4.4
+        pg.text(W - M - 34, y + 6, "PURCHASE ORDER", 13, "B", "right")
+        pg.text(W - M - 34, y + 13, po["number"], 12, "B", "right")
+        d = parse_iso(po.get("sent_at")) or datetime.now(timezone.utc)
+        pg.text(W - M - 34, y + 19, d.astimezone(LOCAL_TZ).strftime("%-m/%-d/%Y"), 9, "R", "right")
+        pg.qr(po["number"], W - M - 30, y - 1, 30)
+        y = max(yy, y + 31) + 4
+        pg.rect(M, y, W - 2 * M, 0.25)
+        y += 6
+        pg.text(M, y, "VENDOR", 8, "B")
+        pg.text(W / 2 + 4, y, "SHIP TO", 8, "B")
+        y += 5
+        vl = [x for x in (v.get("name"), v.get("contact"), v.get("email"), v.get("phone"),
+                          ("Account # " + v["account"]) if v.get("account") else "") if x]
+        sl = [x for x in [CFG["shop_name"]] + shop_addr if x]
+        for i in range(max(len(vl), len(sl))):
+            if i < len(vl):
+                pg.text(M, y, vl[i], 10, "R" if i else "B")
+            if i < len(sl):
+                pg.text(W / 2 + 4, y, sl[i], 10, "R" if i else "B")
+            y += 4.8
+        y += 4
+        for x, t, al in cols:
+            pg.text(x, y, t, 8, "B", al or "left")
+        y += 2
+        pg.rect(M, y, W - 2 * M, 0.25)
+        st.update(pg=pg, y=y + 5)
+    head()
+    total = 0.0
+    for l in lines:
+        desc = wrap_mm(l["name"], "R", 9, 72)
+        need = len(desc) * 4.2 + 2
+        if st["y"] + need > H - 40:
+            st["pg"].text(W - M, H - 10, "Continued on the next page", 8, "R", "right")
+            head()
+        pg, y = st["pg"], st["y"]
+        pg.text(cols[0][0], y, fit_mm(l["vendor_sku"], "M", 8.5, 30), 8.5, "M")
+        pg.text(cols[1][0], y, fit_mm(l["sku"], "M", 8.5, 30), 8.5, "M")
+        for i, dl in enumerate(desc):
+            pg.text(cols[2][0], y + i * 4.2, dl, 9, "R")
+        pg.text(cols[3][0], y, str(l["qty"]), 9.5, "B", "right")
+        pg.text(cols[4][0], y, money_s(l["cost"]) if l["cost"] else "-", 9, "R", "right")   # no price known: the vendor's
+        pg.text(cols[5][0], y, money_s(l["qty"] * l["cost"]) if l["cost"] else "-", 9, "R", "right")
+        total += l["qty"] * l["cost"]
+        y += need
+        pg.rect(M, y - 1.2, W - 2 * M, 0.25)
+        st["y"] = y + 3.5
+    pg, y = st["pg"], st["y"]
+    pg.text(cols[4][0], y + 2, "Total", 10, "B", "right")
+    pg.text(cols[5][0], y + 2, money_s(total), 11, "B", "right")
+    if any(not l["cost"] for l in lines):
+        y += 6
+        pg.text(W - M, y + 2, "Lines without a price: please confirm your price.", 8.5, "R", "right")
+    y += 12
+    if po.get("notes"):
+        pg.text(M, y, "Notes", 9, "B")
+        y += 5
+        for t in wrap_mm(po["notes"], "R", 9.5, W - 2 * M):
+            pg.text(M, y, t, 9.5, "R")
+            y += 4.6
+    pg.text(M, H - 14, f"Please put {po['number']} on your invoice and packing list.", 9, "R")
+    return build_pdf(pages)
+
+
+def email_ready():
+    return bool(CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_token"] and CFG["smtp_from"])
+
+
+def send_email(to, subject, text, attachments=(), cc=None):
+    """Through your mail provider's SMTP (Proton Mail: an SMTP token). attachments: [(filename, bytes)] PDFs."""
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+    from email.utils import formataddr, make_msgid
+    if not email_ready():
+        raise ApiError(400, "Email isn't set up: fill in SMTP_HOST, SMTP_USER, SMTP_TOKEN and SMTP_FROM in stock.env")
+    msg = EmailMessage()
+    msg["From"] = formataddr((CFG["shop_name"], CFG["smtp_from"]))
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+    if CFG["shop_email"] and CFG["shop_email"].lower() != CFG["smtp_from"].lower():
+        msg["Reply-To"] = CFG["shop_email"]
+    msg["Subject"] = subject
+    msg["Message-ID"] = make_msgid(domain=CFG["smtp_from"].split("@")[-1])
+    msg.set_content(text)
+    for name, data in attachments:
+        msg.add_attachment(data, maintype="application", subtype="pdf", filename=name)
+    ctx = ssl.create_default_context()
+    try:
+        if CFG["smtp_port"] == 465:
+            srv = smtplib.SMTP_SSL(CFG["smtp_host"], 465, context=ctx, timeout=30)
+        else:
+            srv = smtplib.SMTP(CFG["smtp_host"], CFG["smtp_port"], timeout=30)
+            srv.ehlo()
+            if srv.has_extn("starttls"):
+                srv.starttls(context=ctx)
+                srv.ehlo()
+        with srv:
+            srv.login(CFG["smtp_user"], CFG["smtp_token"])
+            srv.send_message(msg)
+    except smtplib.SMTPAuthenticationError:
+        raise ApiError(502, "The mail server refused the SMTP username or token (check SMTP_USER and SMTP_TOKEN)")
+    except (smtplib.SMTPException, OSError) as e:
+        raise ApiError(502, f"Couldn't send the email: {e}")
+
+
+def po_email_text(po):
+    lines = [f"{l['qty'] - l['cancelled']} x {l['name']}" + (f"  (your # {l['vendor_sku']})" if l["vendor_sku"] else "") +
+             (f"  at ${l['cost']:,.2f}" if l["cost"] else "  (please confirm your price)") for l in po["lines"] if l["qty"] - l["cancelled"] > 0]
+    v = po.get("vendorInfo") or {}
+    return "\n".join([f"Hello{(' ' + v['contact'].split()[0]) if v.get('contact') else ''},", "",
+                      f"Please find purchase order {po['number']} from {CFG['shop_name']} attached"
+                      + (f" (account {v['account']})" if v.get("account") else "") + ".", ""] + lines +
+                     [f"", f"Total: ${po['total']:,.2f}"] + ([f"", f"Notes: {po['notes']}"] if po.get("notes") else []) +
+                     ["", f"Please put {po['number']} on your invoice and packing list, and reply to confirm.", "", "Thank you,",
+                      CFG["shop_name"]] + [x for x in (CFG["shop_phone"], CFG["shop_email"]) if x])
+
+
+def email_po(pid, by=""):
+    """Email a PO to its vendor, with the PDF attached. A draft is marked sent once the email has gone."""
+    p = q1("SELECT * FROM pos WHERE id=?", pid)
+    if not p:
+        raise ApiError(404, "No such purchase order")
+    if p["status"] not in ("draft", "sent", "partial"):
+        raise ApiError(409, f"{p['number']} is {p['status']}")
+    v = q1("SELECT * FROM vendors WHERE id=?", p["vendor_id"])
+    if not v or not v["email"]:
+        raise ApiError(400, f"{v['name'] if v else 'The vendor'} has no email address: add it on the vendor first")
+    if not q1("SELECT 1 FROM po_lines WHERE po_id=?", pid):
+        raise ApiError(400, "There's nothing on it to order")
+    po = get_po(pid)
+    try:
+        send_email(v["email"], f"Purchase order {po['number']} from {CFG['shop_name']}", po_email_text(po),
+                   [(f"{po['number']}.pdf", po_pdf(po))], CFG["po_cc"] or None)
+    except ApiError as e:
+        with DB_LOCK:
+            conn.execute("UPDATE pos SET email_error=?, updated_at=? WHERE id=?", (e.msg, now_iso(), pid))
+        bump()
+        raise
+    now = now_iso()
+    with DB_LOCK:
+        conn.execute("UPDATE pos SET emailed_at=?, emailed_to=?, email_error='', updated_at=? WHERE id=?", (now, v["email"], now, pid))
+        if p["status"] == "draft":
+            conn.execute("UPDATE pos SET status='sent', sent_at=? WHERE id=?", (now, pid))
+    note_change("po", "emailed", p["number"], f"to {v['email']}", by)
+    log.info("Emailed %s to %s (%s)", p["number"], v["email"], by)
+    bump()
+    return get_po(pid)
+
+
+def purchasing_loop():
+    """Each day at AUTO_PO_TIME: check reorder points, then email the automatic drafts of vendors set to send by
+    themselves. (Reorder points are also checked after every sync; only the sending waits for this time.)"""
+    every = max(1, int(env("PURCHASING_CHECK_SECONDS", "60") or 60))   # tests check more often
+    while True:
+        time.sleep(every)
+        try:
+            now = datetime.now(LOCAL_TZ)
+            h, _, m = CFG["auto_po_time"].partition(":")
+            if (now.hour, now.minute) < (int(h or 15), int(m or 0)) or meta_get("auto_po_day") == now.strftime("%Y-%m-%d"):
+                continue
+            meta_set("auto_po_day", now.strftime("%Y-%m-%d"))
+            if not setup_confirmed():
+                continue
+            reorder_run()
+            if not email_ready():
+                continue
+            for p in q("SELECT p.id, p.number FROM pos p JOIN vendors v ON v.id=p.vendor_id WHERE p.status='draft' AND p.auto=1 "
+                       "AND v.auto_send=1 AND v.active=1 AND v.email!='' ORDER BY p.id"):
+                try:
+                    email_po(p["id"], "Wojtek Stock (sent automatically)")
+                except ApiError as e:
+                    log.warning("Couldn't email %s automatically: %s", p["number"], e.msg)
+        except Exception as e:
+            log.warning("Purchasing check: %s", e)
+
+
+# ---------------------------------------------------------------- GunBroker: listings linked by SKU, quantities kept in step, sales brought in
+# Your GunBroker fixed-price listings are matched to in-shop products by SKU (feed products and guns never). Their
+# quantity follows WooCommerce stock (less GB_BUFFER held back). Each GunBroker sale becomes a WooCommerce order
+# (GB_CREATE_ORDERS), and stock is lowered exactly once: if WooCommerce didn't lower it when the order was created,
+# Wojtek Stock does. GB_SYNC: off, dryrun (work it all out and show it, change nothing) or on.
+GB_LOCK = threading.Lock()
+_gb_token = {"v": None}
+_gb_last = [0.0]
+
+
+def gb_ready():
+    return bool(CFG["gb_devkey"] and CFG["gb_username"] and CFG["gb_password"]) and CFG["gb_sync"] in ("dryrun", "on")
+
+
+def gb_base():
+    return CFG["gb_api"] or ("https://api.sandbox.gunbroker.com/v1" if CFG["gb_sandbox"] else "https://api.gunbroker.com/v1")
+
+
+def gk(d, *names, default=None):
+    """A field from a GunBroker response, whatever its capitalisation (accessToken / AccessToken)."""
+    if not isinstance(d, dict):
+        return default
+    low = {k.lower(): v for k, v in d.items()}
+    for n in names:
+        if n.lower() in low:
+            return low[n.lower()]
+    return default
+
+
+class GbError(Exception):
+    def __init__(self, msg, status=0):
+        super().__init__(msg)
+        self.status = status
+
+
+def _gb_once(method, path, params=None, body=None, token=True):
+    url = gb_base() + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    headers = {"X-DevKey": CFG["gb_devkey"], "Content-Type": "application/json", "Accept": "application/json",
+               "User-Agent": f"WojtekStock/{VERSION}"}
+    if token and _gb_token["v"]:
+        headers["X-AccessToken"] = _gb_token["v"]
+    data = json.dumps(body).encode() if body is not None else None
+    wait = 0.5 - (time.time() - _gb_last[0])   # gently: GunBroker is a shared, live website
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        raw = e.read()[:2000]
+        try:
+            j = json.loads(raw)
+            msg = gk(j, "userMessage", "developerMessage", "message", default="") or ""
+        except ValueError:
+            msg = ""
+        raise GbError(msg or f"GunBroker said {e.code}", e.code)
+    except (urllib.error.URLError, OSError) as e:
+        raise GbError(f"Can't reach GunBroker ({getattr(e, 'reason', e)})")
+    finally:
+        _gb_last[0] = time.time()
+    try:
+        return json.loads(raw or b"null")
+    except ValueError:
+        raise GbError("GunBroker answered with a web page instead of data")
+
+
+def gb_login():
+    r = _gb_once("POST", "/Users/AccessToken", body={"Username": CFG["gb_username"], "Password": CFG["gb_password"]}, token=False)
+    t = gk(r, "accessToken")
+    if not t:
+        raise GbError("GunBroker didn't give an access token (check GB_USERNAME and GB_PASSWORD)")
+    _gb_token["v"] = t
+    return t
+
+
+def gb(method, path, params=None, body=None):
+    if not _gb_token["v"]:
+        gb_login()
+    try:
+        return _gb_once(method, path, params, body)
+    except GbError as e:
+        if e.status == 401:   # the token ran out: log in again, once
+            gb_login()
+            return _gb_once(method, path, params, body)
+        raise
+
+
+def gb_list(path, params):
+    """Every page of a GunBroker list (300 at a time)."""
+    out, page = [], 1
+    while page <= 50:
+        r = gb("GET", path, dict(params, PageSize=300, PageIndex=page))
+        rows = gk(r, "results", default=[]) or []
+        out += rows
+        if len(rows) < 300:
+            break
+        page += 1
+    return out
+
+
+def gb_status(**kw):
+    st = meta_get("gb", {}) or {}
+    st.update(kw)
+    meta_set("gb", st)
+    bump()
+
+
+def gb_link(sku):
+    """The in-shop product a GunBroker listing's SKU belongs to, or why there isn't one."""
+    k = skey(sku)
+    if not k:
+        return None, "No SKU on the listing"
+    rows = q("SELECT * FROM items WHERE skey=?", k)
+    shop = [r for r in rows if r["scope"] == "shop"]
+    if len(shop) == 1:
+        return shop[0], ""
+    if len(shop) > 1:
+        return None, "More than one in-shop product has this SKU"
+    if rows:
+        return None, rows[0]["why"] or "Not an in-shop product"
+    if feed_prefix_of(k):
+        return None, "A distributor feed SKU: never synced"
+    return None, "No in-shop product has this SKU"
+
+
+def gb_refresh_listings():
+    rows = gb_list("/ItemsSelling", {})
+    at = now_iso()
+    seen = set()
+    with Tx() as c:
+        for x in rows:
+            gid = int(gk(x, "itemID") or 0)
+            if not gid:
+                continue
+            seen.add(gid)
+            sku = gk(x, "sku", default="") or ""
+            item, why = gb_link(sku)
+            fixed = 1 if gk(x, "isFixedPrice") else 0
+            if item and not fixed:
+                why = "An auction: quantity isn't synced"
+            c.execute("""INSERT INTO gb_listings(gb_id,title,sku,qty,fixed,price,item_id,why,seen_at) VALUES(?,?,?,?,?,?,?,?,?)
+                         ON CONFLICT(gb_id) DO UPDATE SET title=excluded.title, sku=excluded.sku, qty=excluded.qty,
+                         fixed=excluded.fixed, price=excluded.price, item_id=excluded.item_id, why=excluded.why, seen_at=excluded.seen_at""",
+                      (gid, gk(x, "title", default="") or "", sku, int(gk(x, "quantity") or 0), fixed,
+                       float(gk(x, "fixedPrice", "buyNowPrice", default=0) or 0), item["id"] if item else None, why, at))
+        if seen:
+            c.execute(f"DELETE FROM gb_listings WHERE gb_id NOT IN ({','.join('?' * len(seen))})", tuple(seen))
+        else:
+            c.execute("DELETE FROM gb_listings")
+    return len(rows)
+
+
+def gb_push_quantities():
+    """Set each linked fixed-price listing to WooCommerce stock less the buffer, where it differs."""
+    rows = q("SELECT * FROM gb_listings WHERE item_id IS NOT NULL AND fixed=1")
+    if not rows:
+        return 0
+    live_many([r["item_id"] for r in rows])   # current stock, straight from WooCommerce
+    n = 0
+    for r in rows:
+        it = q1("SELECT * FROM items WHERE id=?", r["item_id"])
+        if not it or it["scope"] != "shop" or it["stock"] is None:
+            continue
+        want = max(0, it["stock"] - CFG["gb_buffer"])
+        with DB_LOCK:
+            conn.execute("UPDATE gb_listings SET want=? WHERE gb_id=?", (want, r["gb_id"]))
+        if want == r["qty"]:
+            if r["error"]:
+                with DB_LOCK:
+                    conn.execute("UPDATE gb_listings SET error='' WHERE gb_id=?", (r["gb_id"],))
+            continue
+        if CFG["gb_sync"] != "on":
+            continue
+        try:
+            gb("PUT", f"/Items/{r['gb_id']}", body={"Quantity": want})
+            with DB_LOCK:
+                conn.execute("UPDATE gb_listings SET qty=?, pushed_qty=?, pushed_at=?, error='' WHERE gb_id=?",
+                             (want, want, now_iso(), r["gb_id"]))
+            n += 1
+            log.info("GunBroker listing %s: quantity %s -> %s", r["gb_id"], r["qty"], want)
+        except GbError as e:
+            msg = (f"Sold out here, but GunBroker wouldn't set the listing to 0 ({e}): end it on GunBroker" if want == 0
+                   else f"GunBroker refused the new quantity: {e}")
+            with DB_LOCK:
+                conn.execute("UPDATE gb_listings SET error=? WHERE gb_id=?", (msg, r["gb_id"]))
+    bump()
+    return n
+
+
+def gb_import_orders(since):
+    """GunBroker orders changed since `since` (UTC datetime): each new, not-cancelled one with linked items becomes a
+    WooCommerce order (and lowers stock once). Never twice: every order is remembered."""
+    params = {"OrdersModifiedSinceDate": since.strftime("%Y-%m-%dT%H:%M:%SZ"), "TimeFrame": 8}
+    done = 0
+    for o in gb_list("/OrdersSold", params):
+        oid = int(gk(o, "orderID") or 0)
+        if not oid:
+            continue
+        known = q1("SELECT * FROM gb_orders WHERE gb_order_id=?", oid)
+        cancelled = bool(gk(o, "orderCancelled"))
+        if known:
+            if cancelled and known["status"] == "imported":
+                with DB_LOCK:
+                    conn.execute("UPDATE gb_orders SET status='cancelled after import', detail=? WHERE gb_order_id=?",
+                                 ("Cancelled on GunBroker after it was brought in: check the WooCommerce order and the stock", oid))
+                bump()
+            continue
+        if cancelled:
+            continue
+        gb_import_one(o)
+        done += 1
+    return done
+
+
+def _gb_record(oid, o, status, detail, items, woo_id=None, woo_number=""):
+    buyer = gk(o, "shipToName", "billToName", default="") or (gk(gk(o, "buyer", default={}) or {}, "username", default="") or "")
+    with DB_LOCK:
+        conn.execute("INSERT OR REPLACE INTO gb_orders(gb_order_id,at,buyer,total,status,woo_order_id,woo_number,detail,items,"
+                     "imported_at,mode) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                     (oid, gk(o, "orderDateUTC", default="") or "", buyer, float(gk(o, "totalPrice", default=0) or 0), status,
+                      woo_id, woo_number, detail, json.dumps(items), now_iso(), CFG["gb_sync"]))
+    bump()
+
+
+def gb_import_one(o):
+    oid = int(gk(o, "orderID"))
+    lines, skipped = [], []
+    for li in gk(o, "orderItemsCollection", default=[]) or []:
+        gid = int(gk(li, "itemID") or 0)
+        lst = q1("SELECT item_id FROM gb_listings WHERE gb_id=?", gid)
+        item = q1("SELECT * FROM items WHERE id=? AND scope='shop'", lst["item_id"]) if lst and lst["item_id"] else None
+        item = item or gb_link(gk(li, "sku", default=""))[0]
+        qty = int(gk(li, "quantity") or 1)
+        if not item:
+            skipped.append(f"{gk(li, 'title', default='')} ({gk(li, 'sku', default='') or 'no SKU'})")
+            continue
+        lines.append({"item": item["id"], "parent": item["parent_id"] or 0, "name": label_name(item), "sku": item["sku"],
+                      "qty": qty, "price": float(gk(li, "itemPrice", default=0) or 0)})
+    if not lines:
+        return _gb_record(oid, o, "skipped", "Nothing on it is a linked in-shop product" +
+                          (f": {', '.join(skipped)}" if skipped else ""), [])
+    if CFG["gb_sync"] != "on" or CFG["woo_write"] != "on" or not setup_confirmed():
+        why = "GB_SYNC isn't on" if CFG["gb_sync"] != "on" else "WooCommerce writes aren't on" if CFG["woo_write"] != "on" else "Setup isn't confirmed"
+        return _gb_record(oid, o, "dry run", f"Would bring in {sum(l['qty'] for l in lines)} unit(s) ({why})", lines)
+    before = {}
+    for l in lines:
+        row, _ = live_one(l["item"], l["parent"])
+        before[l["item"]] = row["stock"]
+    woo_id, woo_number = None, ""
+    if CFG["gb_create_orders"]:
+        name = (gk(o, "shipToName", default="") or "").split(" ", 1)
+        addr = lambda pre: {"first_name": name[0] if name else "", "last_name": name[1] if len(name) > 1 else "",
+                            "address_1": gk(o, pre + "Address1", default="") or "", "address_2": gk(o, pre + "Address2", default="") or "",
+                            "city": gk(o, pre + "City", default="") or "", "state": gk(o, pre + "State", default="") or "",
+                            "postcode": gk(o, pre + "PostalCode", default="") or "", "country": gk(o, pre + "CountryCode", default="") or "US",
+                            "phone": gk(o, pre + "Phone", default="") or ""}
+        body = {"status": "processing", "set_paid": bool(gk(o, "paymentReceived")), "payment_method": "gunbroker",
+                "payment_method_title": "GunBroker", "billing": addr("billTo") if gk(o, "billToAddress1") else addr("shipTo"),
+                "shipping": addr("shipTo"),   # no email address: WooCommerce sends the buyer nothing
+                "customer_note": f"GunBroker order {oid}",
+                "line_items": [dict({"product_id": l["parent"] or l["item"], "quantity": l["qty"],
+                                     "subtotal": f"{l['price'] * l['qty']:.2f}", "total": f"{l['price'] * l['qty']:.2f}"},
+                                    **({"variation_id": l["item"]} if l["parent"] else {})) for l in lines],
+                "shipping_lines": [{"method_id": "flat_rate", "method_title": "GunBroker shipping",
+                                    "total": f"{float(gk(o, 'shipCost', default=0) or 0):.2f}"}],
+                "meta_data": [{"key": "_gunbroker_order_id", "value": str(oid)}]}
+        try:
+            created, _ = woo("POST", "/orders", None, body, tries=2)
+            woo_id, woo_number = int(created["id"]), str(created.get("number") or created["id"])
+        except WooError as e:
+            return _gb_record(oid, o, "failed", f"Couldn't create the WooCommerce order: {e}", lines)
+    lowered, by_us = [], []
+    for l in lines:   # did WooCommerce lower the stock with the order? If not (or no order), Wojtek Stock does
+        row, _ = live_one(l["item"], l["parent"])
+        if woo_id and row["stock"] is not None and before[l["item"]] is not None and row["stock"] <= before[l["item"]] - l["qty"]:
+            lowered.append(l)
+        else:
+            by_us.append(l)
+    if by_us:
+        queue_jobs("sale", [{"item": _item(l["item"]), "delta": -l["qty"]} for l in by_us],
+                   "GunBroker", "", f"Sold on GunBroker (order {oid})", f"WooCommerce order {woo_number}" if woo_number else "")
+    if woo_id:
+        with DB_LOCK:
+            conn.execute("INSERT OR REPLACE INTO order_touch(item_id,order_id,at) VALUES " +
+                         ",".join("(?,?,?)" for _ in lines), sum(([l["item"], woo_id, now_iso()] for l in lines), []))
+    detail = (f"WooCommerce order {woo_number}" if woo_id else "Stock lowered (no WooCommerce order: GB_CREATE_ORDERS is off)") + \
+             (f"; stock lowered by WooCommerce" if lowered and not by_us else f"; stock lowered by Wojtek Stock" if by_us else "") + \
+             (f"; not linked: {', '.join(skipped)}" if skipped else "")
+    log.info("GunBroker order %s brought in: %s", oid, detail)
+    return _gb_record(oid, o, "imported", detail, lines, woo_id, woo_number)
+
+
+def gb_sync(reason="scheduled"):
+    if not gb_ready():
+        raise ApiError(400, "GunBroker isn't set up: GB_DEVKEY, GB_USERNAME, GB_PASSWORD and GB_SYNC in stock.env")
+    if not GB_LOCK.acquire(blocking=False):
+        raise ApiError(409, "A GunBroker sync is already running")
+    try:
+        started = datetime.now(timezone.utc)
+        last = parse_iso(meta_get("gb_orders_since")) or started - timedelta(days=2)
+        gb_status(running=True, error="")
+        n_list = gb_refresh_listings()
+        n_orders = gb_import_orders(last - timedelta(minutes=10)) if setup_confirmed() else 0
+        n_push = gb_push_quantities() if setup_confirmed() else 0
+        meta_set("gb_orders_since", started.isoformat(timespec="seconds"))
+        gb_status(running=False, last_ok=now_iso(), listings=n_list, error="")
+        return {"listings": n_list, "orders": n_orders, "pushed": n_push}
+    except (GbError, WooError) as e:
+        gb_status(running=False, error=str(e), last_try=now_iso())
+        log.warning("GunBroker sync: %s", e)
+        raise ApiError(502, f"GunBroker sync: {e}")
+    finally:
+        GB_LOCK.release()
+
+
+def gunbroker_loop():
+    time.sleep(10)
+    while True:
+        try:
+            if gb_ready() and setup_confirmed():
+                gb_sync()
+        except ApiError:
+            pass
+        except Exception as e:
+            log.warning("GunBroker loop: %s", e)
+            gb_status(running=False, error=f"Unexpected: {e}")
+        for _ in range(int(CFG["gb_minutes"] * 60)):
+            if meta_get("gb_now"):
+                meta_set("gb_now", False)
+                break
+            time.sleep(1)
+
+
+def gb_info():
+    st = meta_get("gb", {}) or {}
+    return {"ready": gb_ready(), "mode": CFG["gb_sync"], "sandbox": CFG["gb_sandbox"], "buffer": CFG["gb_buffer"],
+            "minutes": CFG["gb_minutes"], "createOrders": CFG["gb_create_orders"], "user": CFG["gb_username"],
+            "status": st,
+            "listings": [dict(r, item_name=(label_name(_item(r["item_id"])) if r["item_id"] and q1("SELECT 1 FROM items WHERE id=?", r["item_id"]) else ""),
+                              stock=(q1("SELECT stock FROM items WHERE id=?", r["item_id"]) or {"stock": None})["stock"] if r["item_id"] else None)
+                         for r in q("SELECT * FROM gb_listings ORDER BY (item_id IS NULL), title COLLATE NOCASE")],
+            "orders": [dict(r, items=json.loads(r["items"] or "[]")) for r in q("SELECT * FROM gb_orders ORDER BY gb_order_id DESC LIMIT 100")]}
+
+
+# ---------------------------------------------------------------- distributor feed listings: copy, or link to a part you have
+def feed_search(text):
+    words = [w for w in skey(text).split() if w]
+    if not words:
+        return []
+    where = " AND ".join(["(UPPER(name) LIKE ? OR skey LIKE ? OR gkey LIKE ?)"] * len(words))
+    args = []
+    for w in words:
+        args += [f"%{w}%", f"%{w}%", f"%{gkey(w) or w}%"]
+    out = []
+    for r in q(f"SELECT * FROM items WHERE scope='feed' AND type='simple' AND {where} ORDER BY name COLLATE NOCASE LIMIT 40", *args):
+        d = item_out(r)
+        link = q1("SELECT f.*, i.name iname, i.sku isku FROM feed_links f LEFT JOIN items i ON i.id=f.item_id WHERE f.feed_id=?", r["id"])
+        d["linked"] = {"item": link["item_id"], "name": link["iname"], "sku": link["isku"], "how": link["how"]} if link else None
+        v = vendor_for_feed(r["sku"])
+        d["vendor"] = v["name"] if v else ""
+        out.append(d)
+    return out
+
+
+def _feed_item(fid):
+    r = _item(fid)
+    if r["scope"] != "feed":
+        raise ApiError(409, f"{label_name(r)} isn't a distributor feed listing")
+    if r["type"] != "simple":
+        raise ApiError(409, "Only simple feed listings can be copied (not variable products)")
+    return r
+
+
+def add_alt_barcode(code, item_id, source):
+    g = gkey(code)
+    if not g:
+        return False
+    with DB_LOCK:
+        conn.execute("INSERT OR REPLACE INTO alt_barcodes(gkey,code,item_id,source,at) VALUES(?,?,?,?,?)",
+                     (g, re.sub(r"[\s-]", "", code), item_id, source, now_iso()))
+    bump(items=True)
+    return True
+
+
+def link_feed(b, by, operator):
+    """This feed listing and a part you already have are the same thing: remembered for ordering, and the listing's
+    UPC scans to your part at the station."""
+    f = _feed_item(_int(b.get("feed_id"), 1, 10 ** 12, "Feed listing"))
+    r = _po_item(b.get("item_id"))
+    with DB_LOCK:
+        conn.execute("INSERT OR REPLACE INTO feed_links(feed_id,item_id,how,at,by) VALUES(?,?,?,?,?)",
+                     (f["id"], r["id"], "linked", now_iso(), by))
+    v = vendor_for_feed(f["sku"])
+    if v:
+        remember_vendor_item(v["id"], r["id"], f["sku"])
+    alt = bool(f["gtin"]) and gkey(f["gtin"]) != gkey(r["gtin"]) and add_alt_barcode(f["gtin"], r["id"], f"feed {f['sku']}")
+    note_change("feed", "linked", f"{f['sku']} -> {r['sku'] or r['id']}", label_name(r), by)
+    bump(items=True)
+    return {"ok": True, "vendor": v["name"] if v else "", "altBarcode": f["gtin"] if alt else ""}
+
+
+def copy_feed(b, by, operator):
+    """A new in-shop WooCommerce product, copied from a feed listing: name, descriptions, images (the same media, not
+    copies), categories, price and weight. Its own SKU (generated, or one you give), stock tracked from 0. The listing
+    itself is never changed. WooCommerce allows a UPC on one product only, so the listing's UPC stays on the listing and
+    Wojtek Stock keeps it as an extra barcode of the new product: the station finds it, the register may not."""
+    check_can_write()
+    f = _feed_item(_int(b.get("feed_id"), 1, 10 ** 12, "Feed listing"))
+    if q1("SELECT 1 FROM feed_links WHERE feed_id=?", f["id"]):
+        raise ApiError(409, "This listing is already copied or linked")
+    if set(json.loads(f["cats"] or "[]")) & gun_categories():
+        raise ApiError(409, "That's in a gun category: purchasing is for parts only")
+    mode = b.get("sku_mode")
+    if mode == "custom":
+        sku = skey(b.get("sku"))
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9._/\-]{1,39}", sku):
+            raise ApiError(400, "A SKU is letters, digits and - _ . / (2 to 40)")
+        if q1("SELECT 1 FROM items WHERE skey=?", sku):
+            raise ApiError(409, f"SKU {sku} is already used")
+    elif mode == "generate":
+        sku = ""
+    else:
+        raise ApiError(400, "Pick a SKU: generated or your own")
+    if feed_prefix_of(sku or CFG["sku_prefix"] + "0"):
+        raise ApiError(409, "That SKU starts like a distributor feed: it would be treated as a feed product")
+    status = b.get("status") if b.get("status") in ("draft", "publish", "private") else "draft"
+    name = _text(b.get("name"), 200) or f["name"]
+    live, _ = woo("GET", f"/products/{f['id']}")
+    if feed_prefix_of(live.get("sku")) == "":
+        raise ApiError(409, "That listing's SKU no longer starts with a feed prefix: it isn't a feed listing now")
+    if mode == "generate":
+        sku = next_skus(1)[0]
+    body = {"name": name, "type": "simple", "status": status, "sku": sku, "manage_stock": True, "stock_quantity": 0,
+            "regular_price": str(b.get("price") or live.get("regular_price") or ""),
+            "description": live.get("description") or "", "short_description": live.get("short_description") or "",
+            "categories": [{"id": c["id"]} for c in (live.get("categories") or []) if isinstance(c, dict) and c.get("id")],
+            "images": [{"id": i["id"]} for i in (live.get("images") or []) if isinstance(i, dict) and i.get("id")],
+            "weight": live.get("weight") or "", "dimensions": live.get("dimensions") or {}}
+    if CFG["woo_write"] != "on":
+        return {"dryRun": True, "would": {k: body[k] for k in ("name", "sku", "status", "regular_price")},
+                "message": "Dry run: nothing was created in WooCommerce"}
+    created, _ = woo("POST", "/products", None, body, tries=2)
+    nid = int(created["id"])
+    refresh_products([nid], now_iso())
+    rescope()
+    with DB_LOCK:
+        conn.execute("INSERT OR REPLACE INTO feed_links(feed_id,item_id,how,at,by) VALUES(?,?,?,?,?)", (f["id"], nid, "copied", now_iso(), by))
+        conn.execute("""INSERT INTO jobs(batch,at,kind,item_id,parent_id,name,sku,value,reason,note,by,operator,status,mode,done_at,
+                        before,after) VALUES(?,?,'create',?,0,?,?,?,?,?,?,?,'done',?,?,'',?)""",
+                     (uuid.uuid4().hex[:10], now_iso(), nid, name, sku, sku, f"Copied from feed listing {f['sku']}", "", by, operator,
+                      "on", now_iso(), f"new product #{nid}"))
+    v = vendor_for_feed(f["sku"])
+    if v:
+        remember_vendor_item(v["id"], nid, f["sku"])
+    alt = bool(f["gtin"]) and add_alt_barcode(f["gtin"], nid, f"feed {f['sku']}")
+    note_change("feed", "copied", f"{f['sku']} -> {sku}", name, by)
+    bump(items=True)
+    return {"item": item_out(_item(nid)), "vendor": v["name"] if v else "", "altBarcode": f["gtin"] if alt else ""}
+
+
 # ---------------------------------------------------------------- what the station sees
 def item_out(r, history=False):
     d = {"id": r["id"], "parent": r["parent_id"] or 0, "name": r["name"], "attrs": r["attrs"] or "", "sku": r["sku"] or "",
@@ -1554,6 +3083,14 @@ def item_out(r, history=False):
                                          "by, status, before, after, error FROM jobs WHERE item_id=? AND kind!='note' "
                                          "ORDER BY id DESC LIMIT 15", r["id"])]
         d["labels"] = q1("SELECT COUNT(*) n, MAX(at) last FROM labels WHERE item_id=?", r["id"])["n"]
+        d["costs"] = item_costs(r["id"])
+        ro = q1("SELECT * FROM reorder WHERE item_id=?", r["id"])
+        if ro:
+            vid = reorder_vendor(r["id"], ro["vendor_id"])
+            d["reorder"] = {"min": ro["min_qty"], "max": ro["max_qty"], "vendor": (q1("SELECT name FROM vendors WHERE id=?", vid) or {"name": ""})["name"] if vid else ""}
+        else:
+            d["reorder"] = None
+        d["altBarcodes"] = [x["code"] for x in q("SELECT code FROM alt_barcodes WHERE item_id=?", r["id"])]
     return d
 
 
@@ -1564,11 +3101,15 @@ def station_items():
     names = cat_names()
     rows = q("SELECT * FROM items WHERE scope IN ('shop','readonly') ORDER BY name COLLATE NOCASE, attrs")
     pcats = {r["id"]: r["cats"] for r in q("SELECT id, cats FROM items WHERE type='variable'")}
+    alts = {}
+    for a in q("SELECT code, item_id FROM alt_barcodes"):
+        alts.setdefault(a["item_id"], []).append(a["code"])
     out = []
     for r in rows:
         cats = json.loads((pcats.get(r["parent_id"]) if r["parent_id"] else r["cats"]) or "[]")
         out.append([r["id"], r["parent_id"] or 0, r["name"], r["attrs"] or "", r["sku"] or "", r["gtin"] or "", r["stock"],
-                    r["scope"], r["why"] or "", lab.get(r["id"], 0), [names[c] for c in cats if c in names], r["price"] or ""])
+                    r["scope"], r["why"] or "", lab.get(r["id"], 0), [names[c] for c in cats if c in names], r["price"] or "",
+                    alts.get(r["id"], [])])
     return out
 
 
@@ -1578,6 +3119,7 @@ def resolve_code(code):
     rows = []
     g = gkey(code)
     if g:
+        rows += q("SELECT i.* FROM alt_barcodes a JOIN items i ON i.id=a.item_id WHERE a.gkey=?", g)
         rows += q("SELECT * FROM items WHERE gkey=?", g)
     rows += q("SELECT * FROM items WHERE skey=?", skey(code))
     seen, out = set(), []
@@ -1678,7 +3220,32 @@ def send_to_printer(zpl):
         with socket.create_connection(addr, timeout=6) as s:
             s.sendall(zpl.encode("utf-8"))
     except OSError as e:
-        raise ApiError(502, f"Couldn't reach the label printer at {addr[0]}:{addr[1]} ({e}). Is it on and on the network?")
+        raise ApiError(502, f"Couldn't reach the label printer at {addr[0]}:{addr[1]} ({e}). Check that it's on, and that "
+                            "this server can reach its network (the Zebra is on a different network from the server).")
+
+
+def print_test_label(body, by=""):
+    """A test label at the chosen size: the label's edges, a QR code, the size and the time. Sent means the printer
+    took it; if nothing comes out, the printer is paused, out of labels, or its head is open."""
+    size = body.get("size") or {}
+    try:
+        w_in, l_in = float(size.get("w") or CFG["label_w_in"]), float(size.get("h") or CFG["label_l_in"])
+    except (TypeError, ValueError, AttributeError):
+        raise ApiError(400, "The label size should be in inches")
+    sideways = bool(size.get("sideways"))
+    head = l_in if sideways else w_in
+    if not (0.5 <= min(w_in, l_in) and max(w_in, l_in) <= 8 and 0.75 <= head <= 4.1):
+        raise ApiError(400, "That label size doesn't fit a label printer")
+    r = {"sku": "TEST-LABEL", "name": f"Wojtek Stock test label: {w_in:g} x {l_in:g} in"
+                                      f"{' (printed sideways)' if sideways else ''}, {datetime.now(LOCAL_TZ):%-m/%-d %-I:%M %p}",
+         "attrs": "", "gtin": ""}
+    zpl = zpl_label(r, w_in, l_in, True, False, sideways)
+    dpi = CFG["label_dpi"]
+    W, H = (int(round(l_in * dpi)), int(round(w_in * dpi))) if sideways else (int(round(w_in * dpi)), int(round(l_in * dpi)))
+    zpl = zpl.replace("^XZ", f"^FO2,2^GB{W - 4},{H - 4},3^FS^XZ")   # the label's edges: is it lined up?
+    send_to_printer(zpl)
+    note_change("label", "test", f"{w_in:g} x {l_in:g} in", by=by)
+    return {"ok": True, "printer": ":".join(map(str, printer_addr()))}
 
 
 ZPL_NEWLINE = "\\&"   # a line break inside a ^FB text block (backslash, ampersand)
@@ -2361,6 +3928,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.csv("wojtek-stock-people.csv", export_people())
         if path == "/api/setup":
             return self.send(200, setup_info())
+        if path == "/api/vendors":
+            return self.send(200, {"vendors": list_vendors()})
+        if path == "/api/pos":
+            return self.send(200, {"pos": list_pos((qs.get("status") or [""])[0], qint(qs, "vendor", 0))})
+        if path == "/api/po":
+            return self.send(200, {"po": get_po(qint(qs, "id", 0), (qs.get("number") or [""])[0])})
+        if path == "/api/po/pdf":
+            po = get_po(qint(qs, "id", 0))
+            return self.send(200, po_pdf(po), "application/pdf", {"Content-Disposition": f'attachment; filename="{po["number"]}.pdf"'})
+        if path == "/api/gb":
+            return self.send(200, gb_info())
+        if path == "/api/reorder":
+            return self.send(200, {"rows": reorder_status()})
+        if path == "/api/feed/search":
+            return self.send(200, {"rows": feed_search((qs.get("q") or [""])[0])})
+        if path == "/api/vendor/items":
+            vid = qint(qs, "id", 0)
+            return self.send(200, {"rows": [dict(r) for r in q(
+                "SELECT vi.*, i.name, i.attrs, i.sku, i.stock, i.scope FROM vendor_items vi JOIN items i ON i.id=vi.item_id "
+                "WHERE vi.vendor_id=? AND i.scope='shop' ORDER BY i.name COLLATE NOCASE", vid)]})
         if path == "/api/order":
             return self.send(200, {"order": order_view(find_order((qs.get("code") or [""])[0]))})
         if path == "/api/nosku":
@@ -2383,6 +3970,15 @@ class Handler(BaseHTTPRequestHandler):
             "reasons": {"down": CFG["down_reasons"], "up": CFG["up_reasons"]},
             "label": {"printer": bool(printer_addr()), "w": CFG["label_w_in"], "h": CFG["label_l_in"], "dpi": CFG["label_dpi"]},
             "skuPrefix": CFG["sku_prefix"],
+            "shop": {"name": CFG["shop_name"], "address": [x.strip() for x in CFG["shop_address"].split("|") if x.strip()],
+                     "phone": CFG["shop_phone"], "email": CFG["shop_email"]},
+            "openPos": q1("SELECT COUNT(*) n FROM pos WHERE status IN ('sent','partial')")["n"],
+            "email": {"ready": email_ready(), "from": CFG["smtp_from"], "host": CFG["smtp_host"], "cc": CFG["po_cc"]},
+            "autoPoTime": CFG["auto_po_time"],
+            "gb": {"ready": gb_ready(), "mode": CFG["gb_sync"], "error": (meta_get("gb", {}) or {}).get("error", ""),
+                   "attention": q1("SELECT COUNT(*) n FROM gb_listings WHERE error!=''")["n"] +
+                                q1("SELECT COUNT(*) n FROM gb_orders WHERE status IN ('failed','cancelled after import')")["n"]},
+            "autoDrafts": q1("SELECT COUNT(*) n FROM pos WHERE status='draft' AND auto=1 AND EXISTS(SELECT 1 FROM po_lines WHERE po_id=pos.id)")["n"],
             "backup": dbx_public(),
             "access": {"terminal": self.terminal["name"] if self.terminal else "", "canManage": self.can_manage()},
             "watchCount": q1("SELECT COUNT(*) n FROM restock_watch")["n"],
@@ -2405,6 +4001,49 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sku":
             by, op = self.who_for_write()
             return self.send(200, generate_skus(b, by, op))
+        if path == "/api/vendors":
+            by, _ = self.who_for_write()
+            return self.send(200, save_vendor(b, by))
+        if path == "/api/vendors/remove":
+            by, _ = self.who_for_write()
+            remove_vendor(_int(b.get("id"), 1, 10 ** 9, "Vendor"), by)
+            return self.send(200, {"ok": True})
+        if path == "/api/po":
+            by, _ = self.who_for_write()
+            return self.send(200, {"po": save_po(b, by)})
+        if path == "/api/po/action":
+            by, _ = self.who_for_write()
+            return self.send(200, {"po": po_action(b, by)})
+        if path == "/api/po/email":
+            by, _ = self.who_for_write()
+            return self.send(200, {"po": email_po(_int(b.get("id"), 1, 10 ** 9, "PO"), by)})
+        if path == "/api/gb/sync":
+            return self.send(200, gb_sync("by hand"))
+        if path == "/api/reorder/set":
+            by, _ = self.who_for_write()
+            return self.send(200, set_reorder(b.get("rows"), by))
+        if path == "/api/reorder/run":
+            check_can_write()
+            return self.send(200, reorder_run(f"{self.actor()} (reorder points)"))
+        if path == "/api/reorder/suggest":
+            return self.send(200, reorder_suggest(b.get("days") or 90))
+        if path == "/api/email/test":
+            self.need_manage("Sending a test email")
+            to = _text(b.get("to"), 120) or CFG["shop_email"] or CFG["smtp_from"]
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or ""):
+                raise ApiError(400, "Give an address to send the test to")
+            send_email(to, f"Wojtek Stock test email from {CFG['shop_name']}",
+                       "This is a test from Wojtek Stock. If you're reading it, purchase orders can be emailed to vendors.")
+            return self.send(200, {"ok": True, "to": to})
+        if path == "/api/po/receive":
+            by, op = self.who_for_write()
+            return self.send(200, receive_po(b, by, op))
+        if path == "/api/feed/copy":
+            by, op = self.who_for_write()
+            return self.send(200, copy_feed(b, by, op))
+        if path == "/api/feed/link":
+            by, op = self.who_for_write()
+            return self.send(200, link_feed(b, by, op))
         if path == "/api/return":
             by, op = self.who_for_write()
             return self.send(200, commit_return(b, by, op))
@@ -2421,6 +4060,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"items": live_many(ids)})
         if path == "/api/labels/print":
             return self.send(200, print_labels(b, self.actor()))
+        if path == "/api/labels/test":
+            return self.send(200, print_test_label(b, self.actor()))
         if path == "/api/labels/record":
             pairs = [(int(x.get("id")), _int(x.get("copies", 1), 1, 500, "Copies")) for x in (b.get("lines") or [])
                      if str(x.get("id", "")).isdigit()]
@@ -2520,7 +4161,7 @@ def main():
         log.warning("WooCommerce isn't set up yet: fill in WOO_URL, WOO_KEY and WOO_SECRET in stock.env")
     log.info("WooCommerce writes: %s. Feed prefixes: %s. Setup %s.", CFG["woo_write"],
              ", ".join(feed_prefixes()) or "none yet", "confirmed" if setup_confirmed() else "not confirmed yet")
-    for fn in (sync_loop, worker_loop, backup_loop):
+    for fn in (sync_loop, worker_loop, backup_loop, purchasing_loop, gunbroker_loop):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     srv = ThreadingHTTPServer((CFG["host"], CFG["port"]), Handler)
     srv.daemon_threads = True
