@@ -153,6 +153,12 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
 .labpreview{padding:10px;background:var(--hover);border-radius:8px;border:1px solid var(--line)}
 .labpreview svg{box-shadow:0 1px 4px rgba(0,0,0,.25);border-radius:3px}
 .stock-zero{color:var(--dup);font-weight:700}
+#soundBtn{white-space:nowrap;align-self:stretch}
+.cp{cursor:copy;border-bottom:1px dotted transparent;user-select:all}
+.cp:hover{border-bottom-color:currentColor}
+#copied{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1f6f3f;color:#fff;padding:8px 16px;border-radius:8px;
+  font-weight:600;z-index:9999;pointer-events:none;opacity:0;transition:opacity .2s;text-shadow:none}
+#copied.on{opacity:1}
 #poTable tbody tr,#vTable tbody tr{cursor:pointer}
 #poTable tbody tr:hover td,#vTable tbody tr:hover td{background:var(--hover)}
 .money{width:92px;text-align:right}
@@ -211,6 +217,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
     </div>
     <div class="scanrow">
       <input id="scan" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Scan a barcode or SKU" placeholder="Scan a barcode or SKU">
+      <button class="btn" id="soundBtn" type="button" title="Scan sounds">🔇 Tap for sounds</button>
     </div>
     <div class="scanhint small muted" id="scanHint"></div>
     <div id="flash" aria-live="polite"><div class="fq"></div><div class="ft"><div class="big">Ready</div><div class="sub">Scan your badge, then scan products.</div></div></div>
@@ -316,7 +323,11 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
     <div class="panel">
       <h2>Label design</h2>
       <div class="row" style="align-items:flex-start;gap:24px">
-        <div id="labPreview" class="labpreview" aria-label="Preview of the first label"></div>
+        <div>
+          <div id="labPreview" class="labpreview" aria-label="Preview of the first label"></div>
+          <div id="labZebraPrev" hidden style="margin-top:12px"><div class="small muted" style="margin-bottom:4px">What the Zebra prints (drawn from its own instructions)</div>
+            <img id="labZebraImg" alt="The Zebra's label" style="max-width:260px;display:block"></div>
+        </div>
         <div style="flex:1 1 300px;min-width:240px">
           <div class="row"><label class="small">Size <select id="labSize"></select></label></div>
           <div class="row" style="margin-top:10px;gap:18px">
@@ -539,20 +550,88 @@ function audio(){
   return ac;
 }
 ["keydown", "pointerdown", "touchend"].forEach(t => document.addEventListener(t, () => { try{ audio(); }catch(e){} }, {capture: true, passive: true}));
+/* the same sounds as small audio files made in the page, for a browser that keeps its audio engine locked (from the Locator) */
+const SND = {};
+const SOUNDS = {done: [[880, .07], [1320, .12]], err: [[180, .28]], dup: [[520, .07], [0, .06], [520, .07]], ok: [[1046, .06]]};
+const WAVES = {err: "square", dup: "triangle"};
+function sndFile(seq, wave){
+  const rate = 22050, parts = [];
+  for (const [f, d] of seq){
+    const n = Math.floor(rate * d);
+    for (let i = 0; i < n; i++){
+      const t = i / rate, env = f ? Math.exp(-5 * t / d) * .5 : 0, ph = 2 * Math.PI * f * t;
+      const v = wave === "square" ? Math.sign(Math.sin(ph)) : wave === "triangle" ? 2 / Math.PI * Math.asin(Math.sin(ph)) : Math.sin(ph);
+      parts.push(Math.max(-1, Math.min(1, v * env)));
+    }
+  }
+  const buf = new ArrayBuffer(44 + parts.length * 2), dv = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + parts.length * 2, true); w(8, "WAVE"); w(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true); dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  w(36, "data"); dv.setUint32(40, parts.length * 2, true);
+  parts.forEach((v, i) => dv.setInt16(44 + i * 2, v * 32767, true));
+  let bin = ""; new Uint8Array(buf).forEach(b => { bin += String.fromCharCode(b); });
+  return "data:audio/wav;base64," + btoa(bin);
+}
+function soundOk(){ return !!ac && ac.state === "running"; }
+function soundShow(){
+  const b = $("#soundBtn");
+  if (!b) return;
+  const on = soundOk() || S.soundFallback;
+  b.textContent = on ? "🔊 Sounds" : "🔇 Tap for sounds";
+  b.classList.toggle("primary", !on);
+  b.title = on ? "Scan sounds are on (tap to hear a test)" : "The browser is keeping the scan sounds off: tap to turn them on";
+}
+setInterval(soundShow, 2000);
+document.addEventListener("click", e => {
+  if (!e.target.closest("#soundBtn")) return;
+  try{ audio(); }catch(_){}
+  S.soundFallback = true; beep("ok"); setTimeout(soundShow, 300); focusScan();
+});
 function beep(kind){
+  // ok: a high blip (added) · done: a rising two-tone (saved) · dup: a double boop (already on the list) · err: a low buzz
+  const seq = SOUNDS[kind] || SOUNDS.ok;
+  if (!soundOk() && S.soundFallback){   // the audio engine is locked: the same sound as a plain audio file
+    try{
+      SND[kind] = SND[kind] || sndFile(seq, WAVES[kind] || "sine");
+      const a = new Audio(SND[kind]); a.volume = .6; a.play().catch(() => {});
+    }catch(e){}
+  }
   try{
     audio();
-    const seq = kind === "done" ? [[880, .07], [1320, .12]] : kind === "err" ? [[180, .28]] : kind === "dup" ? [[520, .07], [0, .06], [520, .07]] : [[1046, .06]];
     let t = ac.currentTime;
     for (const [f, d] of seq){
       if (!f){ t += d; continue; }
       const o = ac.createOscillator(), g = ac.createGain();
-      o.type = kind === "err" ? "square" : kind === "dup" ? "triangle" : "sine"; o.frequency.value = f;
+      o.type = WAVES[kind] || "sine"; o.frequency.value = f;
       g.gain.setValueAtTime(.12, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
       o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d); t += d;
     }
   }catch(e){}
 }
+
+/* click to copy a SKU or UPC, even on plain http where the clipboard API is blocked (from the Locator) */
+function cpy(text, inner){
+  return text ? `<span class="cp" data-copy="${esc(String(text))}" title="Click to copy ${esc(String(text))}">${inner == null ? esc(String(text)) : inner}</span>` : (inner || "");
+}
+function copyText(t){
+  const old = () => { const ta = document.createElement("textarea"); ta.value = t; ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;left:-9999px;top:0"; document.body.appendChild(ta); ta.select();
+    let ok = false; try{ ok = document.execCommand("copy"); }catch(e){} ta.remove(); return ok; };
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t).then(() => true, old);
+  return Promise.resolve(old());
+}
+document.addEventListener("click", async e => {
+  const c = e.target.closest && e.target.closest(".cp");
+  if (!c) return;
+  e.preventDefault(); e.stopPropagation();
+  const ok = await copyText(c.dataset.copy);
+  let n = document.getElementById("copied");
+  if (!n){ n = document.createElement("div"); n.id = "copied"; document.body.appendChild(n); }
+  n.textContent = ok ? `✓ Copied ${c.dataset.copy}` : "Couldn't copy: select it and press Ctrl+C";
+  n.classList.add("on"); clearTimeout(n._t); n._t = setTimeout(() => n.classList.remove("on"), 1600);
+  if (S.tab === "station") setTimeout(focusScan, 50);
+}, true);
 function flash(kind, qty, big, sub){
   const el = $("#flash");
   el.className = kind || "";
@@ -1156,12 +1235,12 @@ function renderLookup(d, loading){
       ${d.sku ? `<div class="qrbox" title="QR of the SKU">${qrSvg(d.sku, 3)}</div>` : ""}
     </div>
     <dl class="card-grid" style="margin-top:14px">
-      <dt>SKU</dt><dd class="mono">${esc(d.sku || "none")}</dd>
-      <dt>Barcode</dt><dd class="mono">${esc(d.gtin || "none")}</dd>
+      <dt>SKU</dt><dd class="mono">${d.sku ? cpy(d.sku) : "none"}</dd>
+      <dt>Barcode</dt><dd class="mono">${d.gtin ? cpy(d.gtin) : "none"}</dd>
       <dt>Price</dt><dd>${d.price ? "$" + esc(d.price) : "–"}</dd>
       <dt>WooCommerce id</dt><dd>${d.id}${d.parent ? ` (variation of ${d.parent})` : ""} · ${esc(d.status)}</dd>
       <dt>Labels printed</dt><dd>${d.labels || 0}</dd>
-      ${d.altBarcodes && d.altBarcodes.length ? `<dt>Extra barcodes</dt><dd class="mono">${d.altBarcodes.map(esc).join(", ")} <span class="muted small">(scan here; not in WooCommerce)</span></dd>` : ""}
+      ${d.altBarcodes && d.altBarcodes.length ? `<dt>Extra barcodes</dt><dd class="mono">${d.altBarcodes.map(x => cpy(x)).join(", ")} <span class="muted small">(scan here; not in WooCommerce)</span></dd>` : ""}
       <dt>Reorder</dt><dd>${d.reorder ? `at ${d.reorder.min}, up to ${d.reorder.max}${d.reorder.vendor ? ` from ${esc(d.reorder.vendor)}` : ""}` : `<span class="muted">not set</span>`} ${d.scope === "shop" ? `<button class="btn sm" data-lookup-act="reorder">${d.reorder ? "Change" : "Set"}</button>` : ""}</dd>
       ${d.costs ? `<dt>Cost</dt><dd>${d.costs.lastCost !== null ? `${money(d.costs.lastCost)} last (landed, ${esc(day(d.costs.lastAt))})${d.costs.avgCost !== null ? ` · ${money(d.costs.avgCost)} average of ${d.costs.received} received` : ""}` : `<span class="muted">nothing received on a PO yet</span>`}</dd>
         ${d.costs.onOrder ? `<dt>On order</dt><dd><b>${d.costs.onOrder}</b></dd>` : ""}
@@ -1558,6 +1637,13 @@ function renderLabels(flashId){
     const pv = new SvgPage(sz.w, sz.h);
     drawLabel(pv, first, 0, 0, sz.w, sz.h, o);
     $("#labPreview").innerHTML = pv.svg(Math.min(4, 230 / Math.max(sz.w, sz.h * 0.75)));
+  }
+  const zp = !!(S.st?.label.printer && sz && !sz.sheet && first.sku);
+  $("#labZebraPrev").hidden = !zp;
+  if (zp){
+    const src = "/api/labels/zebra-preview?" + new URLSearchParams({id: first.id || "", w: (sz.w / MM).toFixed(3), h: (sz.h / MM).toFixed(3),
+      sideways: sz.sideways ? 1 : 0, name: o.name ? 1 : 0, upc: o.upc ? 1 : 0});
+    if ($("#labZebraImg").getAttribute("src") !== src) $("#labZebraImg").src = src;
   }
   let skip = $("#labSkip");
   if (sz && sz.sheet && !skip){
@@ -1959,8 +2045,8 @@ function renderProducts(){
     (prodRows.length === 1 && qv ? " · press Enter to open it" : "");
   $("#prodTable tbody").innerHTML = shown.map(it => `<tr data-id="${it.id}">
       <td><div class="item-name">${esc(it.name)}</div>${it.attrs ? `<div class="item-sub">${esc(it.attrs)}</div>` : ""}${it.scope !== "shop" ? `<div class="item-sub"><span class="tag dup">Read-only</span> ${esc(it.why)}</div>` : ""}</td>
-      <td class="mono small">${esc(it.sku) || `<span class="muted">none</span>`}</td>
-      <td class="mono small">${esc(it.gtin) || `<span class="muted">none</span>`}</td>
+      <td class="mono small">${it.sku ? cpy(it.sku) : `<span class="muted">none</span>`}</td>
+      <td class="mono small">${it.gtin ? cpy(it.gtin) : `<span class="muted">none</span>`}</td>
       <td class="small">${esc(it.cats.join(", "))}</td>
       <td class="num ${it.stock === 0 ? "stock-zero" : it.stock < 0 && it.stock !== null ? "stock-neg" : ""}">${fmtNum(it.stock)}</td>
       <td class="num small">${it.price ? "$" + esc(it.price) : ""}</td>
@@ -2463,7 +2549,7 @@ GB_SANDBOX=off      (on: GunBroker's test site, with its own key)
 GB_SYNC=dryrun      (dryrun first; on when it looks right)
 GB_BUFFER=0         (hold this many back from GunBroker)</pre>`;
   $("#gbListings tbody").innerHTML = g.listings.map(l => `<tr><td><a href="https://www.gunbroker.com/item/${l.gb_id}" target="_blank" rel="noopener" class="mono">${l.gb_id}</a><div class="item-sub">${esc(l.title)}${l.fixed ? "" : " · auction"}</div></td>
-      <td class="mono small">${esc(l.sku || "")}</td>
+      <td class="mono small">${cpy(l.sku || "")}</td>
       <td>${l.item_id ? `<span class="item-name">${esc(l.item_name)}</span>` : `<span class="muted small">${esc(l.why || "")}</span>`}${l.error ? `<div class="item-sub" style="color:var(--err)">${esc(l.error)}</div>` : ""}</td>
       <td class="num">${l.item_id ? fmtNum(l.stock) : "–"}</td><td class="num">${l.qty}</td>
       <td class="num">${l.item_id && l.fixed && l.want !== null ? (l.want === l.qty ? `<span class="tag ok">${l.want}</span>` : `<b style="color:var(--dup)">${l.want}</b>`) : "–"}</td></tr>`).join("")

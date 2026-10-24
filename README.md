@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v12.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v13.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v12.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v13.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -122,7 +122,11 @@ separately, so one person's scans are never credited to another, and a list wait
 - **Return:** scan the order barcode on the packing slip that came back, then each item in the box (see Returns below).
 - **Lookup:** scan anything to see its live stock, barcode, SKU, QR and recent changes.
 
-**Sounds:** a short high blip when a product goes on the list, a double boop when it was already on it, a low buzz for
+**Sounds:** browsers keep a page silent until it's been tapped, and after a reload they can keep it silent with
+nothing on screen saying so. The button beside the scan box shows which: **🔊 Sounds** when they're on, **🔇 Tap for
+sounds** when the browser is holding them back (one tap turns them on and plays a test blip). If the browser still
+won't run its sound engine, the same sounds play as small audio files. The sounds: a short high blip when a product
+goes on the list, a double boop when it was already on it, a low buzz for
 an error (unknown code, a feed product, a gun, a read-only product), and a rising two-tone when changes are saved.
 
 **Barcodes:** UPC-A, EAN-13 and GTIN-14 forms of the same number match (`012345678905` = `0012345678905`). A SKU
@@ -148,6 +152,8 @@ the search box.
   parent's), stock (in stock, 5 or fewer, out of stock, below zero), products with **no UPC** or **no SKU**, and
   in-shop or read-only.
 - **Sort** by name, SKU, category, stock or price. The count of products and units shown is above the table.
+- **Click a SKU or UPC** to copy it (here, on the Lookup card and on the GunBroker tab), for pasting into WooCommerce
+  or an email. It works on the shop's plain-http address, where browsers block the usual copy.
 - **Click a product** (or press Enter when the search finds just one) to open its Lookup card: live stock, history,
   link a barcode, give it a SKU. **Label** adds it to the label list.
 
@@ -310,6 +316,8 @@ that has a UPC but no SKU.
 - **Print on the Zebra:** set `LABEL_PRINTER` (and `LABEL_DPI`) in `stock.env`; the size is whatever you pick under
   Label design (rolls only; Avery sheets are for a regular printer). The Zebra uses its own built-in font, a little
   narrower than the preview's, so its SKU lettering can come out slightly different.
+- **What the Zebra prints:** under the preview on the Labels tab, a second picture drawn from the printer's own
+  instructions (the very commands it's sent), so it shows how the Zebra will lay the label out, with no printer needed.
 - **Print a test label** (beside Print on the Zebra) sends a label of the chosen size with its edges drawn, a QR code
   and the time: the first thing to try after changing anything.
 - **When a label doesn't print** (lessons from setting up the Locator's Zebra, the same printer):

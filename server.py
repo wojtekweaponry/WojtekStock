@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v12"
+VERSION = "v13"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -3224,6 +3224,76 @@ def send_to_printer(zpl):
                             "this server can reach its network (the Zebra is on a different network from the server).")
 
 
+def zpl_svg(zpl):
+    """A picture of a label drawn from the very ZPL the printer gets (an idea from the Locator), turned as it's read:
+    text where the printer puts it, sized by the Zebra font's widths, the QR code module by module, boxes. It can't
+    drift from what prints, and works with no printer connected."""
+    from xml.sax.saxutils import escape as xesc
+    W = int(re.search(r"\^PW(\d+)", zpl).group(1))
+    H = int(re.search(r"\^LL(\d+)", zpl).group(1))
+    out = []
+    for f in re.findall(r"\^FO[^\^]*(?:\^(?!FS)[^\^]*)*\^FS", zpl):
+        x, y = map(int, re.search(r"\^FO(\d+),(\d+)", f).groups())
+        gb = re.search(r"\^GB(\d+),(\d+),(\d+)", f)
+        if gb:
+            bw, bh, t = map(int, gb.groups())
+            out.append(f'<rect x="{x}" y="{y}" width="{bw}" height="{bh}" fill="none" stroke="#000" stroke-width="{t}"/>')
+            continue
+        dm = re.search(r"\^FD(.*?)\^FS", f)
+        if not dm:
+            continue
+        data = dm.group(1)
+        qm = re.search(r"\^BQN,2,(\d+)", f)
+        if qm:
+            mag = int(qm.group(1))
+            g = qr_encode(data[3:] if data.startswith("MA,") else data)
+            out.append("".join(f'<rect x="{x + c * mag}" y="{y + r * mag}" width="{mag}" height="{mag}"/>'
+                               for r, row in enumerate(g) for c, v in enumerate(row) if v))
+            continue
+        a = re.search(r"\^A0([NR]),(\d+),(\d+)", f)
+        fb = re.search(r"\^FB(\d+),(\d+),(\d+),([LCR])", f)
+        if not (a and fb):
+            continue
+        h, wd = int(a.group(2)), int(a.group(3))
+        bw, sp, al = int(fb.group(1)), int(fb.group(3)), fb.group(4)
+        lines = data.split(ZPL_NEWLINE)
+        anchor, tx = {"L": ("start", 0), "C": ("middle", bw / 2), "R": ("end", bw)}[al]
+        spans = "".join(
+            f'<text x="{tx:.0f}" y="{i * (h + sp) + h * 0.8:.0f}" font-size="{h * 0.98:.0f}" text-anchor="{anchor}" font-weight="700" '
+            f'textLength="{min(bw, _zw(t, h, wd / h)):.0f}" lengthAdjust="spacingAndGlyphs">{xesc(t)}</text>'
+            for i, t in enumerate(lines) if t)
+        box = len(lines) * h + (len(lines) - 1) * sp
+        rot = f"translate({x + box},{y}) rotate(90)" if a.group(1) == "R" else f"translate({x},{y})"
+        out.append(f'<g transform="{rot}">{spans}</g>')
+    sideways = zpl.count("^A0R") > zpl.count("^A0N")
+    body = (f'<g transform="translate(0,{W}) rotate(-90)">' if sideways else "<g>") + "".join(out) + "</g>"
+    vw, vh = (H, W) if sideways else (W, H)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -6 {vw + 12} {vh + 12}" width="{vw + 12}" height="{vh + 12}" '
+            f'shape-rendering="crispEdges" '
+            f'font-family="\'Arial Narrow\', \'Helvetica Neue\', Helvetica, Arial, sans-serif"><rect x="-6" y="-6" width="{vw + 12}" '
+            f'height="{vh + 12}" rx="14" fill="#fff" stroke="#999"/>{body}</svg>').encode()
+
+
+def zebra_preview(qs):
+    """The Zebra's version of a product's label (or a sample), at a size: the SVG drawn from its ZPL."""
+    def num(k, d):
+        try:
+            return float((qs.get(k) or [d])[0])
+        except (TypeError, ValueError):
+            raise ApiError(400, "The label size should be in inches")
+    w_in, l_in, sideways = num("w", CFG["label_w_in"]), num("h", CFG["label_l_in"]), (qs.get("sideways") or ["0"])[0] == "1"
+    head = l_in if sideways else w_in
+    if not (0.5 <= min(w_in, l_in) and max(w_in, l_in) <= 8 and 0.75 <= head <= 4.1):
+        raise ApiError(400, "That label size doesn't fit a label printer")
+    iid = qint(qs, "id", 0)
+    r = _item(iid) if iid else {"sku": "HORN-9MM-115", "name": "Hornady Critical Defense 9mm Luger 115 gr FTX", "attrs": "",
+                                 "gtin": "090255000001"}
+    if not r["sku"]:
+        raise ApiError(400, "That product has no SKU")
+    item = {"sku": r["sku"], "name": r["name"], "attrs": r["attrs"] or "", "gtin": r["gtin"] or ""}
+    return zpl_svg(zpl_label(item, w_in, l_in, (qs.get("name") or ["1"])[0] != "0", (qs.get("upc") or ["0"])[0] == "1", sideways))
+
+
 def print_test_label(body, by=""):
     """A test label at the chosen size: the label's edges, a QR code, the size and the time. Sent means the printer
     took it; if nothing comes out, the printer is paused, out of labels, or its head is open."""
@@ -3950,6 +4020,8 @@ class Handler(BaseHTTPRequestHandler):
                 "WHERE vi.vendor_id=? AND i.scope='shop' ORDER BY i.name COLLATE NOCASE", vid)]})
         if path == "/api/order":
             return self.send(200, {"order": order_view(find_order((qs.get("code") or [""])[0]))})
+        if path == "/api/labels/zebra-preview":
+            return self.send(200, zebra_preview(qs), "image/svg+xml")
         if path == "/api/nosku":
             return self.send(200, {"rows": [item_out(r) for r in q("SELECT * FROM items WHERE scope IN ('shop','readonly') "
                                                                   "AND sku='' ORDER BY name COLLATE NOCASE, attrs")]})

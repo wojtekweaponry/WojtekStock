@@ -1,1 +1,1 @@
-v12: fixes from the Locator's notes: deploy.sh no longer stops a zip when GitHub's changes touched no files; GITHUB.md sends SSH over port 443 (port 22 is blocked here); zips kept out of git; a Print a test label button and clearer printer errors; a preview of what the Zebra prints, used by the tests
+v13: from the Locator's second note: a 🔊/🔇 sound button by the scan box (with backup sounds when the browser locks its audio), click to copy a SKU or UPC, and a Zebra preview on the Labels tab drawn from the printer's own instructions

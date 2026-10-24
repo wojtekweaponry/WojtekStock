@@ -488,6 +488,12 @@ def run():
     code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 3, "h": 2, "sideways": True}})
     time.sleep(1)
     tz = printed[-1] if len(printed) > n0 else ""
+    code, raw, hd = api("GET", "/api/labels/zebra-preview?id=2001&w=3&h=2&sideways=1&name=1&upc=0")
+    svg = raw.decode() if isinstance(raw, bytes) else str(raw)
+    check("Zebra preview drawn from its own instructions", code == 200 and "image/svg+xml" in hd.get("Content-Type", "")
+          and "HORN-" in svg and "rotate(-90)" in svg and "Hornady" in svg, (code, svg[:200]))
+    code, r, _ = api("GET", "/api/labels/zebra-preview?w=9&h=9")
+    check("preview refuses a size no label printer takes", code == 400, (code, r))
     check("Print a test label", code == 200 and "TEST-LABEL" in tz and "^GB" in tz and "^PW406^LL609" in tz, (code, r, tz[:120]))
     try:
         sys.path.insert(0, HERE)
