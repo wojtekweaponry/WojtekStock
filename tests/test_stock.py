@@ -226,6 +226,11 @@ def pdf_qr(data):
     return out
 
 
+def today_iso():
+    from datetime import date
+    return date.today().isoformat()
+
+
 def main():
     log = open(os.path.join(TMP, "mock.log"), "w")
     procs["mock"] = subprocess.Popen([sys.executable, os.path.join(HERE, "mock_woo.py"), str(MOCK_PORT)], stdout=log, stderr=log)
@@ -488,13 +493,13 @@ def run():
     code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 3, "h": 2, "sideways": True}})
     time.sleep(1)
     tz = printed[-1] if len(printed) > n0 else ""
+    check("Print a test label", code == 200 and "TEST-LABEL" in tz and "^GB" in tz and "^PW406^LL609" in tz, (code, r, tz[:120]))
     code, raw, hd = api("GET", "/api/labels/zebra-preview?id=2001&w=3&h=2&sideways=1&name=1&upc=0")
     svg = raw.decode() if isinstance(raw, bytes) else str(raw)
     check("Zebra preview drawn from its own instructions", code == 200 and "image/svg+xml" in hd.get("Content-Type", "")
           and "HORN-" in svg and "rotate(-90)" in svg and "Hornady" in svg, (code, svg[:200]))
     code, r, _ = api("GET", "/api/labels/zebra-preview?w=9&h=9")
     check("preview refuses a size no label printer takes", code == 400, (code, r))
-    check("Print a test label", code == 200 and "TEST-LABEL" in tz and "^GB" in tz and "^PW406^LL609" in tz, (code, r, tz[:120]))
     try:
         sys.path.insert(0, HERE)
         import zpl_preview
@@ -870,6 +875,87 @@ def run():
     code, r, _ = api("GET", "/api/order?code=" + first["woo_number"])
     check("a GunBroker sale can come back through Return mode", code == 200 and any(l["item"] == 2111 for l in r["order"]["lines"]), (code, r))
     start_server("on")
+
+    print("17f. Vendor invoices and payments")
+    code, r, _ = http("GET", f"http://127.0.0.1:{STOCK_PORT}/api/bills", None, ck)
+    check("a station terminal can't see invoices", code == 403, (code, r))
+    code, r, _ = http("POST", f"http://127.0.0.1:{STOCK_PORT}/api/payment", {"vendor_id": orion}, ck)
+    check("or record payments", code == 403, (code, r))
+    po = api("GET", "/api/po?number=PO-0001")[1]["po"]   # the PO received in 17b (po was reused for later ones)
+    pre = api("GET", f"/api/bill/prefill?vendor={orion}&pos={po['id']}")[1]["lines"]
+    P1 = {x["item_id"]: x for x in pre}
+    check("lines start from the PO: received, not yet billed, at the PO price", P1[2003]["qty"] == 10 and P1[2003]["price"] == 4
+          and P1[2105]["qty"] == 5 and P1[2106]["received"] == 2, P1)
+    lines = [{"po_line_id": P1[2003]["po_line_id"], "qty": 10, "price": 4.25},
+             {"po_line_id": P1[2105]["po_line_id"], "qty": 5, "price": 2},
+             {"po_line_id": P1[2106]["po_line_id"], "qty": 3, "price": 3},
+             {"description": "Restocking fee", "qty": 1, "price": 5}]
+    pdf = base64.b64encode(b"%PDF-1.4 a pretend invoice").decode()
+    code, r, _ = api("POST", "/api/bill", {"vendor_id": orion, "number": "INV-1001", "date": "2026-08-01", "terms": "Net 30",
+                                          "freight": 12, "lines": lines, "file": {"name": "inv 1001.pdf", "data": pdf}})
+    check("invoice entered", code == 200, (code, r))
+    bill = r["bill"]
+    check("total and due date from the terms", bill["total"] == 78.5 and bill["due"] == "2026-08-31" and bill["status"] == "open"
+          and bill["flag"] == "overdue", {k: bill[k] for k in ("total", "due", "status", "flag")})
+    iss = [i for l in bill["lines"] for i in l["issues"]]
+    check("three-way match: the price change", any("Price $4.25, PO says $4.00" in i for i in iss), iss)
+    check("three-way match: billed more than received and ordered", any("Billed 3 but 2 received" in i for i in iss)
+          and any("Billed 3 but 2 ordered" in i for i in iss) and bill["issues"] == 3, iss)
+    c = api("GET", "/api/item?id=2003")[1]["costs"]
+    want = 4.25 + 12 * 42.5 / 61.5 / 10
+    check("the invoice's price and freight become the landed cost", abs(c["lastCost"] - want) < 0.001 and abs(c["avgCost"] - want) < 0.001, (c, want))
+    check("and the vendor's price for next time", any(v["name"] == "Orion" and v["last_cost"] == 4.25 for v in c["vendors"]), c["vendors"])
+    p = api("GET", f"/api/po?id={po['id']}")[1]["po"]
+    check("the PO shows what's billed, and the invoice", {l["item_id"]: l["billed"] for l in p["lines"]}[2003] == 10 and p["bills"][0]["number"] == "INV-1001", p.get("bills"))
+    code, r, _ = api("POST", "/api/bill", {"vendor_id": orion, "number": "INV-1001", "date": "2026-08-01", "lines": lines})
+    check("the same invoice can't be entered twice", code == 409, r)
+    code, raw, hd = api("GET", f"/api/bill/file?id={bill['id']}")
+    check("the copy is kept", code == 200 and raw == b"%PDF-1.4 a pretend invoice" and hd.get("Content-Type") == "application/pdf", (code, raw[:30]))
+    code, r, _ = api("POST", "/api/bill", {"vendor_id": orion, "number": "X", "date": "2026-08-01", "lines": [{"description": "a", "qty": 1, "price": 1}],
+                                          "file": {"name": "virus.exe", "data": pdf}})
+    check("only PDFs and photos can be attached", code == 400, r)
+    check("and a refused attachment saves nothing", not any(x["number"] == "X" for x in api("GET", "/api/bills")[1]["bills"]))
+    code, r, _ = api("POST", "/api/bill", {"vendor_id": orion, "number": "INV-1002", "date": today_iso(), "lines": [{"description": "Shop supplies", "qty": 1, "price": 20}]})
+    b2 = r["bill"]
+    check("an invoice with no PO", code == 200 and b2["total"] == 20 and b2["issues"] == 0 and b2["flag"] in ("", "due soon"), b2)
+    pay = api("GET", "/api/payables")[1]
+    check("what's owed: overdue and later", pay["totals"]["overdue"] == 78.5 and pay["totals"]["count"] == 2 and pay["vendors"][0]["owed"] == 98.5, pay)
+    code, r, _ = api("POST", "/api/payment", {"vendor_id": orion, "date": today_iso(), "amount": 50, "method": "Check", "reference": "1201",
+                                             "allocations": [{"bill_id": bill["id"], "amount": 40}]})
+    check("a payment must add up to what it pays", code == 400 and "don't add up" in r["error"], r)
+    code, r, _ = api("POST", "/api/payment", {"vendor_id": orion, "date": today_iso(), "amount": 100, "method": "Check",
+                                             "allocations": [{"bill_id": b2["id"], "amount": 100}]})
+    check("can't pay more than an invoice owes", code == 409, r)
+    code, r, _ = api("POST", "/api/payment", {"vendor_id": orion, "date": today_iso(), "amount": 50, "method": "Check", "reference": "1201",
+                                             "allocations": [{"bill_id": bill["id"], "amount": 50}]})
+    b1 = api("GET", f"/api/bill?id={bill['id']}")[1]["bill"]
+    check("partly paid", code == 200 and b1["status"] == "partial" and b1["owed"] == 28.5, (code, r, b1["status"], b1["owed"]))
+    code, r, _ = api("POST", "/api/bill", {"vendor_id": orion, "kind": "credit", "number": "CM-7", "date": today_iso(),
+                                          "lines": [{"description": "Credit for a returned part", "qty": 1, "price": 15}]})
+    cm = r["bill"]
+    check("a vendor credit", code == 200 and cm["status"] == "available" and cm["left"] == 15, (code, r))
+    code, r, _ = api("POST", "/api/credit/apply", {"credit_id": cm["id"], "bill_id": bill["id"], "amount": 20})
+    check("can't apply more credit than there is", code == 409, r)
+    code, r, _ = api("POST", "/api/credit/apply", {"credit_id": cm["id"], "bill_id": bill["id"], "amount": 15})
+    check("credit applied", code == 200 and r["bill"]["owed"] == 13.5, r)
+    code, r, _ = api("POST", "/api/payment", {"vendor_id": orion, "date": today_iso(), "amount": 33.5, "method": "Check", "reference": "1202",
+                                             "allocations": [{"bill_id": bill["id"], "amount": 13.5}, {"bill_id": b2["id"], "amount": 20}]})
+    pid = r.get("id")
+    check("one check pays two invoices", code == 200 and api("GET", f"/api/bill?id={bill['id']}")[1]["bill"]["status"] == "paid"
+          and api("GET", f"/api/bill?id={b2['id']}")[1]["bill"]["status"] == "paid", (code, r))
+    check("nothing owed now", api("GET", "/api/payables")[1]["totals"]["count"] == 0)
+    code, r, _ = api("POST", "/api/bill/void", {"id": bill["id"]})
+    check("a paid invoice can't be voided", code == 409, r)
+    code, r, _ = api("POST", "/api/bill", {"id": bill["id"], "vendor_id": orion, "number": "INV-1001", "date": "2026-08-01", "lines": [{"description": "x", "qty": 1, "price": 1}]})
+    check("an invoice's total can't drop below what's paid on it", code == 409, r)
+    api("POST", "/api/payment/void", {"id": pid})
+    check("voiding a payment reopens what it paid", api("GET", f"/api/bill?id={bill['id']}")[1]["bill"]["owed"] == 13.5
+          and api("GET", f"/api/bill?id={b2['id']}")[1]["bill"]["status"] == "open")
+    code, raw, _ = api("GET", "/api/bills.csv")
+    check("invoices export", code == 200 and b"INV-1001" in raw and b"CM-7" in raw and b"78.5" in raw, raw[:300])
+    code, raw, _ = api("GET", "/api/payments.csv")
+    check("payments export", code == 200 and b"1201" in raw and b"void" in raw, raw[:300])
+    check("the header knows what's overdue", state()["payables"]["overdue"] == 13.5)
 
     print("18. Restart keeps everything")
     start_server("on")

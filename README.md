@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v13.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v14.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v13.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v14.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -250,6 +250,27 @@ address POs should come from (it must be on your own domain, and needs a paid pl
 `SMTP_HOST=smtp.protonmail.ch`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_TOKEN`, `SMTP_FROM` (that address), optionally
 `PO_EMAIL_CC`; then `sudo docker compose up -d`. **Setup → Email → Send a test email** checks it. Your Proton password
 never goes in `stock.env`, and revoking the token in Proton cuts off Wojtek Stock alone.
+
+**Vendor invoices (bills you pay):** on the Purchasing tab, with the shop password (a station terminal can't see or
+record money). Wojtek Stock keeps what you owe vendors:
+
+- **Enter an invoice:** the vendor, their invoice number and date, and the terms (the due date follows: Net 30 is 30
+  days). Tick the POs it's for and **Fill in**: each line starts with what was received and not yet billed, at the PO's
+  price; change what's different. An invoice can cover several POs, part of one, or none; **Add a charge** for anything
+  not on a PO (a restocking fee, handling). Freight, fees and tax go below. Attach a photo or PDF of it.
+- **The three-way match:** ordered (the PO), received (what was scanned in) and billed (every invoice). A price that
+  differs from the PO, or more billed than received or ordered, is flagged on the line as you type and shown in the
+  list ("2 differences"), so you can question it before paying.
+- **Landed costs follow the invoice:** saved with "use this invoice's prices", its prices, freight and fees become the
+  landed cost of the parts it bills, and the vendor's price for next time.
+- **Paying:** **Record a payment**: the date, how (check, ACH, card, cash), the check number, and which invoices it pays
+  (one check can pay several; it must add up). An invoice shows Open, Partly paid or Paid, and **overdue** or **due
+  soon**; overdue invoices put a banner at the top of the page. A payment entered by mistake can be voided, and the
+  invoices it paid owe again.
+- **Vendor credits** (a return, a price correction): **Enter a credit**, then **Apply to an invoice**.
+- **What you owe** sits above the list: overdue, due within a week, later, and by vendor. **Invoices (CSV)** and
+  **Payments (CSV)** download everything, for your accountant at tax time. Copies of invoices go into the nightly
+  Dropbox backup too.
 
 **From a distributor feed:** search the feed listings by name, SKU or UPC, then either
 

@@ -159,7 +159,9 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
 #copied{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1f6f3f;color:#fff;padding:8px 16px;border-radius:8px;
   font-weight:600;z-index:9999;pointer-events:none;opacity:0;transition:opacity .2s;text-shadow:none}
 #copied.on{opacity:1}
-#poTable tbody tr,#vTable tbody tr{cursor:pointer}
+#poTable tbody tr,#vTable tbody tr,#billTable tbody tr{cursor:pointer}
+#billTable tbody tr:hover td{background:var(--hover)}
+.issue{color:var(--dup);font-size:.84rem}
 #poTable tbody tr:hover td,#vTable tbody tr:hover td{background:var(--hover)}
 .money{width:92px;text-align:right}
 .formgrid{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center}
@@ -265,6 +267,20 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
         </div>
         <div class="tablewrap" style="margin-top:10px"><table id="poTable"><thead><tr><th>PO</th><th>Vendor</th><th>Status</th><th class="num">Lines</th><th class="num">Units</th><th class="num">Still due</th><th class="num">Total</th><th>Created</th></tr></thead><tbody></tbody></table></div>
       </div>
+      <div class="panel" id="billsPanel" hidden>
+        <div class="row"><h2 class="grow" style="margin:0">Vendor invoices</h2>
+          <button class="btn sm" id="billNew">Enter an invoice</button><button class="btn sm" id="creditNew">Enter a credit</button>
+          <button class="btn sm primary" id="payNew">Record a payment</button></div>
+        <div id="payables" class="small" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:10px">
+          <select id="billStatus" aria-label="Which invoices"><option value="open">Still owed</option><option value="overdue">Overdue</option><option value="paid">Paid</option><option value="credits">Credits</option><option value="void">Void</option><option value="">All</option></select>
+          <select id="billVendor" aria-label="Vendor"></select>
+          <span class="grow"></span>
+          <button class="btn sm" id="payList">Payments</button>
+          <a class="btn sm" href="/api/bills.csv" download>Invoices (CSV)</a><a class="btn sm" href="/api/payments.csv" download>Payments (CSV)</a>
+        </div>
+        <div class="tablewrap" style="margin-top:10px"><table id="billTable"><thead><tr><th>Vendor</th><th>Invoice #</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Owed</th><th>Match</th><th>POs</th></tr></thead><tbody></tbody></table></div>
+      </div>
       <div class="panel">
         <div class="row"><h2 class="grow" style="margin:0">Vendors</h2><button class="btn" id="vNew">Add vendor</button></div>
         <div class="tablewrap" style="margin-top:10px"><table id="vTable"><thead><tr><th>Vendor</th><th>Account</th><th>Email</th><th>Phone</th><th>Feed prefix</th><th class="num">Parts</th><th class="num">Open POs</th></tr></thead><tbody></tbody></table></div>
@@ -277,6 +293,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
       </div>
     </div>
     <div id="poPanel" hidden></div>
+    <div id="billPanel" hidden></div>
   </section>
 
   <section id="tab-gunbroker" hidden>
@@ -719,6 +736,7 @@ function renderChrome(){
   if (st.woo.ready && !st.setup.confirmed) b.push(`<div class="banner warn"><b>Changes are locked until Setup is confirmed.</b> Scanning and lookups work; tick your distributor feed prefixes on the <a href="#" data-goto="setup">Setup</a> tab to unlock changes.</div>`);
   if (st.woo.write === "dryrun") b.push(`<div class="banner info"><b>Dry run.</b> Every change is checked against the live store and logged, but nothing is sent to WooCommerce. When the log looks right, set WOO_WRITE=on in stock.env and restart.</div>`);
   if (st.woo.write === "off") b.push(`<div class="banner warn"><b>Writes are off</b> (WOO_WRITE=off): changes are refused.</div>`);
+  if (st.payables && st.payables.overdue > 0) b.push(`<div class="banner warn"><b>Overdue vendor invoices: $${(+st.payables.overdue).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}.</b> See <a href="#" data-goto="purchasing">Purchasing</a>.</div>`);
   if (st.gb && st.gb.attention) b.push(`<div class="banner warn"><b>GunBroker needs a look:</b> ${st.gb.attention} listing${st.gb.attention === 1 ? "" : "s"} or sale${st.gb.attention === 1 ? "" : "s"} flagged. See the <a href="#" data-goto="gunbroker">GunBroker</a> tab.</div>`);
   if (st.gb && st.gb.error && st.gb.ready) b.push(`<div class="banner warn"><b>GunBroker sync problem:</b> ${esc(st.gb.error)}</div>`);
   if (st.watchCount) b.push(`<div class="banner warn"><b>${st.watchCount} possible double restock${st.watchCount === 1 ? "" : "s"}:</b> a return Wojtek Stock already put back was refunded in WooCommerce with "Restock refunded items" ticked. See <a href="#" data-goto="setup">Setup</a>.</div>`);
@@ -2209,6 +2227,7 @@ async function loadPurchasing(){
       <td class="num">${v.items}</td><td class="num">${v.openPos}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">No vendors yet. Add the companies you buy parts from.</td></tr>`;
     await loadPos();
     await loadReorder();
+    await loadBills();
   }catch(e){ toast(e.message); }
 }
 async function loadReorder(){
@@ -2303,7 +2322,7 @@ $("#vNew").addEventListener("click", () => editVendor());
 $("#vTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-v]"); if (tr) editVendor(P.vendors.find(v => v.id === +tr.dataset.v)); });
 
 /* a purchase order: a draft is edited here; a sent one is followed here and received at the station */
-function showPoPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = !on; if (!on) loadPurchasing(); }
+function showPoPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = !on; $("#billPanel").hidden = true; if (!on) loadPurchasing(); }
 $("#poNew").addEventListener("click", () => {
   if (!P.vendors.length) return toast("Add a vendor first");
   P.po = null;
@@ -2352,13 +2371,15 @@ function renderPo(){
     <div class="row"><button class="btn sm" data-po-act="back">← Purchase orders</button><h2 class="grow" style="margin:0">${esc(o.number)} · ${esc(o.vendor)}</h2>${poTag(o.status)}</div>
     <p class="small muted">Created ${esc(when(o.created_at))}${o.created_by ? " by " + esc(o.created_by) : ""}${o.sent_at ? ` · sent ${esc(when(o.sent_at))}` : ""}${o.emailed_at ? ` · emailed to ${esc(o.emailed_to)} ${esc(when(o.emailed_at))}` : ""}${o.closed_at ? ` · finished ${esc(when(o.closed_at))}` : ""}</p>
     ${o.email_error ? `<p class="small" style="color:var(--err)">Last email attempt failed: ${esc(o.email_error)}</p>` : ""}
-    <div class="tablewrap"><table><thead><tr><th>Part</th><th>Vendor's part #</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Still due</th><th class="num">Unit cost</th><th class="num">Total</th></tr></thead><tbody>
+    <div class="tablewrap"><table><thead><tr><th>Part</th><th>Vendor's part #</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Still due</th><th class="num">Billed</th><th class="num">Unit cost</th><th class="num">Total</th></tr></thead><tbody>
       ${o.lines.map(l => `<tr><td><div class="item-name">${esc(l.name)}</div><div class="item-sub mono">${esc(l.sku || "")}${l.extra ? ` · <span class="tag dup">not ordered</span>` : ""}</div></td>
         <td class="mono small">${esc(l.vendor_sku || "")}</td><td class="num">${l.qty}${l.cancelled ? `<div class="item-sub">${l.cancelled} cancelled</div>` : ""}</td>
         <td class="num">${l.received}${l.receiving ? `<div class="item-sub">+${l.receiving} saving</div>` : ""}</td><td class="num">${l.open ? `<b>${l.open}</b>` : "–"}</td>
+        <td class="num">${l.billed ? l.billed : "–"}</td>
         <td class="num">${money(l.cost)}</td><td class="num">${money((l.qty - l.cancelled) * (l.cost || 0))}</td></tr>`).join("")}
-      <tr class="totals"><td colspan="6" class="num">Total</td><td class="num">${money(o.total)}</td></tr></tbody></table></div>
+      <tr class="totals"><td colspan="7" class="num">Total</td><td class="num">${money(o.total)}</td></tr></tbody></table></div>
     ${o.notes ? `<p class="small"><b>Notes:</b> ${esc(o.notes)}</p>` : ""}
+    ${(o.bills || []).filter(x => !x.void).length ? `<p class="small"><b>Vendor invoices:</b> ${o.bills.filter(x => !x.void).map(x => S.st.access.canManage ? `<a href="#" data-openbill="${x.id}">${esc(x.number)}</a> (${money(x.total)})` : `${esc(x.number)}`).join(", ")}</p>` : ""}
     ${o.receipts.length ? `<h3>Received</h3>${o.receipts.map(r => `<div class="small" style="margin:6px 0"><b>${esc(when(r.at))}</b> by ${esc(r.by)}${r.invoice ? ` · invoice ${esc(r.invoice)}` : ""} · freight ${money(r.freight)}, fees ${money(r.fees)}${r.mode !== "on" ? ` · <span class="tag info">dry run</span>` : ""}
       <ul class="progress">${r.lines.map(x => `<li>${statusTag(x.status)} ${x.qty} × ${esc(x.name)} at ${money(x.unit_cost)}, landed ${money(x.landed_unit)} each</li>`).join("")}</ul></div>`).join("")}` : ""}
     <div class="listfoot"><button class="btn" data-po-act="pdf">Download PDF</button>
@@ -2523,6 +2544,250 @@ $("#feedTable").addEventListener("click", async e => {
   if (!pick) return;
   try{ const r = await api("/api/feed/link", {feed_id: f.id, item_id: +pick.value}); toast(`Linked${r.vendor ? ` under ${r.vendor}` : ""}${r.altBarcode ? `; ${r.altBarcode} now scans to your part` : ""}`, 5000); await loadItems(); feedSearch(); }
   catch(err){ toast(err.message, 7000); }
+});
+
+/* ---------- vendor invoices (bills you pay), payments, credits: the shop password only ---------- */
+const B = {bill: null, edit: null};
+const BILL_STATUS = {open: ["", "Open"], partial: ["dup", "Partly paid"], paid: ["ok", "Paid"], void: ["", "Void"], available: ["info", "Credit"], used: ["", "Credit used"]};
+const billTag = d => { const [c, t] = BILL_STATUS[d.status] || ["", d.status]; return `<span class="tag ${c}">${esc(t)}</span>${d.flag ? ` <span class="tag ${d.flag === "overdue" ? "err" : "dup"}">${esc(d.flag)}</span>` : ""}`; };
+const isoDay = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+function termsDays(t){ t = String(t || "").toLowerCase(); const m = t.match(/net\s*(\d{1,3})/) || t.match(/(\d{1,3})\s*days?/); if (m) return +m[1]; if (/receipt|cod|c\.o\.d|prepaid|due now/.test(t)) return 0; return 30; }
+function addDays(day, n){ const d = new Date(day + "T12:00:00"); d.setDate(d.getDate() + n); return isoDay(d); }
+
+async function loadBills(){
+  const on = !!(S.st && S.st.access.canManage);
+  $("#billsPanel").hidden = !on;
+  if (!on) return;
+  const sel = $("#billVendor"), cur = sel.value;
+  sel.innerHTML = `<option value="">All vendors</option>` + P.vendors.map(v => `<option value="${v.id}" ${String(v.id) === cur ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+  const [pb, rows] = await Promise.all([api("/api/payables"), api("/api/bills?" + new URLSearchParams({status: $("#billStatus").value, vendor: sel.value}))]);
+  const t = pb.totals;
+  $("#payables").innerHTML = t.count || t.credits ? `Owed: <b style="color:var(--err)">${money(t.overdue)} overdue</b> · <b>${money(t.soon)}</b> due within a week · ${money(t.later)} later${t.credits ? ` · ${money(t.credits)} in credits to use` : ""}
+      ${pb.vendors.length ? `<br>${pb.vendors.map(v => `${esc(v.vendor)} ${money(v.owed)}${v.overdue ? ` (<span style="color:var(--err)">${money(v.overdue)} overdue</span>)` : ""}${v.credits ? `, ${money(v.credits)} credit` : ""}`).join(" · ")}` : ""}`
+    : `<span class="muted">Nothing owed to vendors.</span>`;
+  $("#billTable tbody").innerHTML = rows.bills.map(d => `<tr data-bill="${d.id}"><td>${esc(d.vendor)}</td><td class="mono">${esc(d.number)}${d.kind === "credit" ? ` <span class="tag info">credit</span>` : ""}${d.file ? " 📎" : ""}</td>
+      <td class="small">${esc(d.date || "")}</td><td class="small">${esc(d.kind === "bill" ? d.due || "" : "")}</td><td class="num">${money(d.total)}</td>
+      <td class="num">${money(d.paid)}</td><td class="num">${d.kind === "credit" ? `${money(d.left)} left` : d.owed ? `<b>${money(d.owed)}</b>` : "–"}</td>
+      <td>${billTag(d)}${d.issues ? ` <span class="tag dup">${d.issues} difference${d.issues === 1 ? "" : "s"}</span>` : d.pos.length ? ` <span class="tag ok">matches</span>` : ""}</td>
+      <td class="small mono">${esc(d.pos.join(" "))}</td></tr>`).join("")
+    || `<tr><td colspan="9" class="empty">No vendor invoices here.</td></tr>`;
+}
+$("#billStatus").addEventListener("change", loadBills);
+$("#billVendor").addEventListener("change", loadBills);
+$("#billTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-bill]"); if (tr) openBill(+tr.dataset.bill); });
+document.addEventListener("click", e => { const a = e.target.closest("[data-openbill]"); if (a){ e.preventDefault(); openBill(+a.dataset.openbill); } });
+function showBillPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = true; $("#billPanel").hidden = !on; if (!on) loadPurchasing(); }
+
+async function newBill(kind){
+  if (!P.vendors.length) return toast("Add a vendor first");
+  const v = P.vendors.find(x => String(x.id) === $("#billVendor").value) || P.vendors[0];
+  const day = isoDay();
+  B.bill = null;
+  B.edit = {kind, vendor_id: v.id, number: "", date: day, terms: v.terms || "", due: kind === "bill" ? addDays(day, termsDays(v.terms)) : "", dueTouched: false,
+            freight: "", fees: "", tax: "", notes: "", apply_costs: true, lines: [], file: null};
+  showBillPanel(true); await renderBill();
+}
+$("#billNew").addEventListener("click", () => newBill("bill"));
+$("#creditNew").addEventListener("click", () => newBill("credit"));
+async function openBill(id){
+  try{
+    const d = (await api("/api/bill?id=" + id)).bill;
+    B.bill = d;
+    B.edit = {id: d.id, kind: d.kind, vendor_id: d.vendor_id, number: d.number, date: d.date, terms: d.terms || "", due: d.due || "", dueTouched: true,
+              freight: d.freight || "", fees: d.fees || "", tax: d.tax || "", notes: d.notes || "", apply_costs: !!d.apply_costs, file: null,
+              lines: d.lines.map(l => ({po_line_id: l.po_line_id, po_number: l.po_number || "", description: l.description || "", qty: l.qty, price: l.price,
+                                        ordered: l.ordered, received: l.received, billedOther: l.po_line_id ? (l.billedAll || 0) - (l.qty || 0) : 0, poCost: l.poCost}))};
+    showBillPanel(true); await renderBill();
+  }catch(e){ toast(e.message, 6000); }
+}
+const billSub = () => B.edit.lines.reduce((a, l) => a + (+l.qty || 0) * (+l.price || 0), 0);
+const billTotal = () => billSub() + (+B.edit.freight || 0) + (+B.edit.fees || 0) + (+B.edit.tax || 0);
+function lineIssues(l){
+  if (!l.po_line_id || B.edit.kind !== "bill") return [];
+  const out = [], billed = (l.billedOther || 0) + (+l.qty || 0);
+  if (billed > (l.received || 0) + 1e-9) out.push(`Billed ${billed} but ${l.received || 0} received`);
+  if (billed > (l.ordered || 0) + 1e-9) out.push(`Billed ${billed} but ${l.ordered || 0} ordered`);
+  if ((l.poCost || 0) > 0 && Math.abs((+l.price || 0) - l.poCost) > 0.005) out.push(`Price ${money(+l.price || 0)}, PO says ${money(l.poCost)}`);
+  return out;
+}
+async function renderBill(){
+  const e = B.edit, d = B.bill, el = $("#billPanel"), credit = e.kind === "credit";
+  const locked = d && (d.void || d.applications.length);
+  let pos = [];
+  if (!credit){ try{ pos = (await api("/api/pos?" + new URLSearchParams({status: "", vendor: e.vendor_id}))).pos.filter(p => !["draft", "cancelled"].includes(p.status)); }catch(err){} }
+  const v = P.vendors.find(x => x.id === e.vendor_id) || {name: d ? d.vendor : ""};
+  el.innerHTML = `<div class="panel">
+    <div class="row"><button class="btn sm" data-bact="back">← Purchasing</button><h2 class="grow" style="margin:0">${d ? `${credit ? "Credit" : "Invoice"} ${esc(d.number)} · ${esc(d.vendor)}` : credit ? "A vendor credit" : "A vendor invoice"}</h2>${d ? billTag(d) : ""}</div>
+    ${d && d.void ? `<p class="banner warn small">This ${credit ? "credit" : "invoice"} is void.</p>` : ""}
+    <div class="formgrid" style="margin-top:12px;max-width:640px">
+      <label class="small" for="bfVendor">Vendor</label><select id="bfVendor" ${d ? "disabled" : ""}>${P.vendors.map(x => `<option value="${x.id}" ${x.id === e.vendor_id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+      <label class="small" for="bfNumber">${credit ? "Credit #" : "Their invoice #"}</label><input id="bfNumber" type="text" class="mono" value="${esc(e.number)}">
+      <label class="small" for="bfDate">${credit ? "Date" : "Invoice date"}</label><input id="bfDate" type="date" value="${esc(e.date)}">
+      ${credit ? "" : `<label class="small" for="bfTerms">Terms</label><input id="bfTerms" type="text" value="${esc(e.terms)}" placeholder="Net 30">
+      <label class="small" for="bfDue">Due</label><input id="bfDue" type="date" value="${esc(e.due)}">`}
+    </div>
+    ${!credit && pos.length ? `<h3>From purchase orders</h3><div class="row small">${pos.map(p => `<label class="inline"><input type="checkbox" data-bpo="${p.id}"> ${esc(p.number)} <span class="muted">(${esc(PO_STATUS[p.status] ? PO_STATUS[p.status][1] : p.status)}, ${money(p.total)})</span></label>`).join("")}
+      <button class="btn sm" data-bact="fill">Fill in from the ticked POs</button></div>` : ""}
+    <div class="tablewrap" style="margin-top:12px"><table id="bfTable"><thead><tr><th>PO</th><th>What</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Billed before</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+      ${e.lines.map((l, i) => `<tr data-bl="${i}"><td class="mono small">${esc(l.po_number || "")}</td>
+        <td>${l.po_line_id ? esc(l.description) : `<input type="text" data-bf="description" value="${esc(l.description)}" placeholder="A charge: restocking fee, handling…" style="width:100%">`}
+          <div class="issue" data-issues>${lineIssues(l).map(esc).join(" · ")}</div></td>
+        <td class="num">${l.po_line_id ? fmtNum(l.ordered) : "–"}</td><td class="num">${l.po_line_id ? fmtNum(l.received) : "–"}</td><td class="num">${l.po_line_id ? (l.billedOther || "–") : "–"}</td>
+        <td class="num"><input class="qty" type="number" min="0" step="any" data-bf="qty" value="${l.qty}"></td>
+        <td class="num"><input class="money" type="number" step="0.01" data-bf="price" value="${l.price}"></td>
+        <td class="num" data-amt>${money((+l.qty || 0) * (+l.price || 0))}</td><td class="num"><button class="btn sm" data-brm>✕</button></td></tr>`).join("")
+        || `<tr><td colspan="9" class="empty">${credit ? "Add what the credit is for." : "Tick POs above and fill in, or add lines."}</td></tr>`}
+      </tbody></table></div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" data-bact="addline">${credit ? "Add a line" : "Add a charge that isn't on a PO"}</button></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end;gap:16px">
+      <label class="small">Freight $ <input id="bfFreight" type="number" min="0" step="0.01" class="money" value="${esc(e.freight)}"></label>
+      <label class="small">Fees $ <input id="bfFees" type="number" min="0" step="0.01" class="money" value="${esc(e.fees)}"></label>
+      <label class="small">Tax $ <input id="bfTax" type="number" min="0" step="0.01" class="money" value="${esc(e.tax)}"></label>
+      <b id="bfTotal">Total ${money(billTotal())}</b></div>
+    <textarea id="bfNotes" placeholder="Notes" style="margin-top:10px;min-height:50px">${esc(e.notes)}</textarea>
+    <div class="row" style="margin-top:8px">
+      <label class="small">Attach a copy (PDF or photo) <input id="bfFile" type="file" accept=".pdf,image/*"></label>
+      ${d && d.hasFile ? `<a href="/api/bill/file?id=${d.id}" target="_blank" rel="noopener">📎 ${esc(d.file_name || "the attached copy")}</a>` : ""}
+      ${credit ? "" : `<label class="inline small"><input type="checkbox" id="bfCosts" ${e.apply_costs ? "checked" : ""}> Use this invoice's prices, freight and fees for the parts' landed costs</label>`}
+    </div>
+    <div class="listfoot">${d && !d.void && !d.applications.length ? `<button class="btn danger" data-bact="void">Void it</button>` : ""}
+      <span class="grow"></span>
+      ${d && !d.void && credit && d.left > 0 ? `<button class="btn" data-bact="applycredit">Apply to an invoice</button>` : ""}
+      ${d && !d.void && !credit && d.owed > 0 ? `<button class="btn" data-bact="pay">Record a payment</button>` : ""}
+      ${!(d && d.void) ? `<button class="btn primary" data-bact="save">Save</button>` : ""}</div>
+    ${d && d.applications.length ? `<h3>${credit ? "Applied" : "Paid"}</h3><ul class="progress">${d.applications.map(a => a.payment ? `<li>${money(a.amount)} · ${esc(a.payment.date)} · ${esc(a.payment.method)}${a.payment.reference ? " " + esc(a.payment.reference) : ""}</li>`
+      : `<li>${money(a.amount)} credit${a.credit && a.credit.number ? " " + esc(a.credit.number) : ""}${a.credit_id === d.id ? " (applied to another invoice)" : ""}</li>`).join("")}</ul>` : ""}
+    ${locked && !d.void ? `<p class="small muted">With payments or credits applied, it can still be corrected, but its total can't go below what's applied; void the payment first to void it.</p>` : ""}
+  </div>`;
+}
+function billRecalc(){
+  const e = B.edit;
+  $$("#bfTable tr[data-bl]").forEach(tr => { const l = e.lines[+tr.dataset.bl];
+    tr.querySelector("[data-amt]").textContent = money((+l.qty || 0) * (+l.price || 0));
+    tr.querySelector("[data-issues]").textContent = lineIssues(l).join(" · "); });
+  $("#bfTotal").textContent = "Total " + money(billTotal());
+}
+$("#billPanel").addEventListener("input", ev => {
+  const e = B.edit, t = ev.target;
+  if (!e) return;
+  const tr = t.closest("tr[data-bl]");
+  if (tr && t.dataset.bf){ const l = e.lines[+tr.dataset.bl]; l[t.dataset.bf] = t.dataset.bf === "description" ? t.value : t.value; return billRecalc(); }
+  const map = {bfNumber: "number", bfDate: "date", bfTerms: "terms", bfDue: "due", bfFreight: "freight", bfFees: "fees", bfTax: "tax", bfNotes: "notes"};
+  if (map[t.id]){
+    e[map[t.id]] = t.value;
+    if (t.id === "bfDue") e.dueTouched = true;
+    if ((t.id === "bfDate" || t.id === "bfTerms") && !e.dueTouched && e.kind === "bill" && e.date){ e.due = addDays(e.date, termsDays(e.terms)); const dd = $("#bfDue"); if (dd) dd.value = e.due; }
+    if (["bfFreight", "bfFees", "bfTax"].includes(t.id)) billRecalc();
+  }
+});
+$("#billPanel").addEventListener("change", async ev => {
+  const e = B.edit, t = ev.target;
+  if (!e) return;
+  if (t.id === "bfVendor"){ e.vendor_id = +t.value; const v = P.vendors.find(x => x.id === e.vendor_id) || {}; e.terms = v.terms || ""; if (!e.dueTouched && e.date) e.due = addDays(e.date, termsDays(e.terms)); e.lines = e.lines.filter(l => !l.po_line_id); renderBill(); }
+  if (t.id === "bfCosts") e.apply_costs = t.checked;
+  if (t.id === "bfFile"){
+    const f = t.files[0];
+    if (!f) return;
+    if (f.size > 12e6){ toast("Attach a file under 12 MB"); t.value = ""; return; }
+    const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
+    e.file = {name: f.name, data};
+  }
+});
+$("#billPanel").addEventListener("click", async ev => {
+  const e = B.edit;
+  if (ev.target.closest("[data-brm]")){ e.lines.splice(+ev.target.closest("tr").dataset.bl, 1); return renderBill(); }
+  const b = ev.target.closest("[data-bact]");
+  if (!b) return;
+  const act = b.dataset.bact;
+  if (act === "back") return showBillPanel(false);
+  if (act === "addline"){ e.lines.push({po_line_id: null, description: "", qty: 1, price: ""}); return renderBill(); }
+  if (act === "fill"){
+    const ids = $$("#billPanel [data-bpo]").filter(c => c.checked).map(c => c.dataset.bpo);
+    if (!ids.length) return toast("Tick the POs this invoice is for");
+    try{
+      const r = await api("/api/bill/prefill?" + new URLSearchParams({vendor: e.vendor_id, pos: ids.join(","), bill: e.id || ""}));
+      for (const x of r.lines){
+        if (e.lines.find(l => l.po_line_id === x.po_line_id)) continue;
+        e.lines.push({po_line_id: x.po_line_id, po_number: x.po_number, description: x.description, qty: x.qty, price: x.price,
+                      ordered: x.ordered, received: x.received, billedOther: x.billed, poCost: x.price});
+      }
+      return renderBill();
+    }catch(err){ return toast(err.message, 6000); }
+  }
+  try{
+    if (act === "save"){
+      const body = {id: e.id, kind: e.kind, vendor_id: e.vendor_id, number: e.number, date: e.date, terms: e.terms, due: e.kind === "bill" ? e.due : "",
+                    freight: e.freight || 0, fees: e.fees || 0, tax: e.tax || 0, notes: e.notes, apply_costs: e.apply_costs, file: e.file,
+                    lines: e.lines.map(l => ({po_line_id: l.po_line_id, description: l.description, qty: +l.qty || 0, price: +l.price || 0}))};
+      const r = (await api("/api/bill", body)).bill;
+      toast(r.issues ? `Saved, with ${r.issues} difference${r.issues === 1 ? "" : "s"} to check` : "Saved", 5000);
+      return openBill(r.id);
+    }
+    if (act === "void"){
+      if (!await modal({title: "Void it?", html: "<p>It stays in the list as void and stops counting toward what you owe.</p>", ok: "Void it", danger: true})) return;
+      await api("/api/bill/void", {id: e.id}); toast("Voided"); return openBill(e.id);
+    }
+    if (act === "pay") return recordPayment(B.bill.vendor_id, B.bill.id);
+    if (act === "applycredit"){
+      const open = (await api("/api/bills?" + new URLSearchParams({status: "open", vendor: B.bill.vendor_id}))).bills.filter(x => x.kind === "bill" && x.owed > 0);
+      if (!open.length) return toast("No open invoices from this vendor to apply it to");
+      const back = await modal({title: `Apply credit ${B.bill.number}`, ok: "Apply",
+        html: `<div class="formgrid"><label class="small" for="acBill">To invoice</label><select id="acBill">${open.map(x => `<option value="${x.id}">${esc(x.number)} (owes ${money(x.owed)})</option>`).join("")}</select>
+          <label class="small" for="acAmt">Amount</label><input id="acAmt" type="number" step="0.01" value="${Math.min(B.bill.left, open[0].owed).toFixed(2)}"></div>`});
+      if (!back) return;
+      await api("/api/credit/apply", {credit_id: B.bill.id, bill_id: +back.querySelector("#acBill").value, amount: +back.querySelector("#acAmt").value});
+      toast("Credit applied"); return openBill(B.bill.id);
+    }
+  }catch(err){ toast(err.message, 8000); }
+});
+
+async function recordPayment(vendorId, billId){
+  if (!P.vendors.length) return toast("Add a vendor first");
+  vendorId = vendorId || +($("#billVendor").value || 0) || P.vendors[0].id;
+  const open = (await api("/api/bills?" + new URLSearchParams({status: "open", vendor: vendorId}))).bills.filter(x => x.kind === "bill" && x.owed > 0)
+    .sort((a, b) => (a.due || "").localeCompare(b.due || ""));
+  const back = await modal({title: "Record a payment", ok: "Record it",
+    html: `<div class="formgrid"><label class="small" for="pmVendor">Vendor</label><select id="pmVendor">${P.vendors.map(v => `<option value="${v.id}" ${v.id === vendorId ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
+      <label class="small" for="pmDate">Date</label><input id="pmDate" type="date" value="${isoDay()}">
+      <label class="small" for="pmMethod">How</label><select id="pmMethod">${["Check", "ACH / bank transfer", "Card", "Cash", "Other"].map(m => `<option>${m}</option>`).join("")}</select>
+      <label class="small" for="pmRef">Check # or reference</label><input id="pmRef" type="text">
+      <label class="small" for="pmNotes">Notes</label><input id="pmNotes" type="text"></div>
+      <h3>Pays</h3>${open.length ? `<div class="tablewrap"><table><thead><tr><th></th><th>Invoice</th><th>Due</th><th class="num">Owed</th><th class="num">Paying</th></tr></thead><tbody>
+      ${open.map(x => `<tr data-pm="${x.id}"><td><input type="checkbox" ${!billId || x.id === billId ? "checked" : ""} aria-label="Pay"></td><td class="mono">${esc(x.number)}</td><td class="small">${esc(x.due || "")}${x.flag === "overdue" ? ` <span class="tag err">overdue</span>` : ""}</td>
+        <td class="num">${money(x.owed)}</td><td class="num"><input type="number" class="money" step="0.01" value="${x.owed.toFixed(2)}"></td></tr>`).join("")}</tbody></table></div>
+      <p class="small" style="text-align:right">Payment total: <b id="pmTotal"></b></p>` : `<p class="muted">Nothing is owed to this vendor.</p>`}
+      <button type="button" data-v="vend" hidden></button>`,
+    onOpen: el => {
+      const sum = () => { let t = 0; el.querySelectorAll("tr[data-pm]").forEach(tr => { if (tr.querySelector("input[type=checkbox]").checked) t += +tr.querySelector("input[type=number]").value || 0; });
+        const o = el.querySelector("#pmTotal"); if (o) o.textContent = money(t); return t; };
+      el.addEventListener("input", sum);
+      el.addEventListener("change", ev => { if (ev.target.id === "pmVendor") el.querySelector('button[data-v="vend"]').click(); else sum(); });   // closes it properly, then reopens for that vendor
+      sum();
+    }});
+  if (back && back.dataset.choice === "vend") return recordPayment(+back.querySelector("#pmVendor").value);
+  if (!back || !open.length) return;
+  const allocations = [...back.querySelectorAll("tr[data-pm]")].filter(tr => tr.querySelector("input[type=checkbox]").checked)
+    .map(tr => ({bill_id: +tr.dataset.pm, amount: +tr.querySelector("input[type=number]").value || 0})).filter(a => a.amount > 0);
+  const amount = Math.round(allocations.reduce((a, x) => a + x.amount, 0) * 100) / 100;
+  try{
+    await api("/api/payment", {vendor_id: +back.querySelector("#pmVendor").value, date: back.querySelector("#pmDate").value, method: back.querySelector("#pmMethod").value,
+                               reference: back.querySelector("#pmRef").value, notes: back.querySelector("#pmNotes").value, amount, allocations});
+    toast(`Recorded ${money(amount)}`, 4000);
+    if (B.bill && !$("#billPanel").hidden) openBill(B.bill.id); else loadPurchasing();
+  }catch(err){ toast(err.message, 8000); }
+}
+$("#payNew").addEventListener("click", () => recordPayment());
+$("#payList").addEventListener("click", async () => {
+  const rows = (await api("/api/payments")).payments;
+  const back = await modal({title: "Payments", ok: "Close", cancel: "",
+    html: rows.length ? `<div class="tablewrap" style="max-height:60vh;overflow:auto"><table><thead><tr><th>Date</th><th>Vendor</th><th class="num">Amount</th><th>How</th><th>Paid</th><th></th></tr></thead><tbody>
+      ${rows.map(p => `<tr><td class="small">${esc(p.date)}</td><td>${esc(p.vendor)}</td><td class="num">${money(p.amount)}</td><td class="small">${esc(p.method)} ${esc(p.reference || "")}</td>
+        <td class="small">${p.bills.map(x => esc(x.number)).join(", ")}</td><td>${p.void ? `<span class="tag">void</span>` : `<button class="btn sm danger" data-v="pv${p.id}">Void</button>`}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No payments yet.</p>`});
+  const c = back && back.dataset.choice;
+  if (c && c.startsWith("pv")){
+    if (!await modal({title: "Void this payment?", html: "<p>The invoices it paid go back to owing that amount.</p>", ok: "Void it", danger: true})) return;
+    try{ await api("/api/payment/void", {id: +c.slice(2)}); toast("Payment voided"); loadPurchasing(); }catch(err){ toast(err.message, 6000); }
+  }
 });
 
 /* ---------- GunBroker ---------- */

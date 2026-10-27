@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v13"
+VERSION = "v14"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -232,6 +232,19 @@ CREATE TABLE IF NOT EXISTS alt_barcodes(gkey TEXT PRIMARY KEY, code TEXT, item_i
 add_col("jobs", "po_id", "INTEGER")
 # v10: reorder points, automatic drafts, email
 conn.executescript("""
+CREATE TABLE IF NOT EXISTS bills(id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, kind TEXT DEFAULT 'bill',
+    number TEXT, date TEXT, due TEXT, terms TEXT, subtotal REAL, freight REAL, fees REAL, tax REAL, total REAL, notes TEXT,
+    file TEXT, file_name TEXT, apply_costs INTEGER DEFAULT 1, void INTEGER DEFAULT 0, created_at TEXT, by TEXT, updated_at TEXT);
+CREATE INDEX IF NOT EXISTS bills_vendor ON bills(vendor_id);
+CREATE TABLE IF NOT EXISTS bill_lines(id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER, po_line_id INTEGER, po_id INTEGER,
+    item_id INTEGER, description TEXT, qty REAL, price REAL, amount REAL);
+CREATE INDEX IF NOT EXISTS bill_lines_bill ON bill_lines(bill_id);
+CREATE INDEX IF NOT EXISTS bill_lines_poline ON bill_lines(po_line_id);
+CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, date TEXT, amount REAL, method TEXT,
+    reference TEXT, notes TEXT, void INTEGER DEFAULT 0, created_at TEXT, by TEXT);
+CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER, payment_id INTEGER, credit_id INTEGER,
+    amount REAL, at TEXT, by TEXT);
+CREATE INDEX IF NOT EXISTS applications_bill ON applications(bill_id);
 CREATE TABLE IF NOT EXISTS gb_listings(gb_id INTEGER PRIMARY KEY, title TEXT, sku TEXT, qty INTEGER, fixed INTEGER,
     price REAL, item_id INTEGER, why TEXT, want INTEGER, pushed_qty INTEGER, pushed_at TEXT, error TEXT, seen_at TEXT);
 CREATE TABLE IF NOT EXISTS gb_orders(gb_order_id INTEGER PRIMARY KEY, at TEXT, buyer TEXT, total REAL, status TEXT,
@@ -1729,7 +1742,7 @@ def po_out(p, full=True):
         left = max(0, ln["qty"] - got - going - ln["cancelled"])
         it = q1("SELECT stock, scope, gtin FROM items WHERE id=?", ln["item_id"])
         e = dict(ln, received=got, receiving=going, open=left, stock=it["stock"] if it else None,
-                 scope=it["scope"] if it else "gone", gtin=it["gtin"] if it else "")
+                 scope=it["scope"] if it else "gone", gtin=it["gtin"] if it else "", billed=po_line_billing(ln["id"]))
         total += (ln["qty"] - ln["cancelled"]) * (ln["cost"] or 0)
         open_units += left
         out.append(e)
@@ -1737,6 +1750,8 @@ def po_out(p, full=True):
     if full:
         d["lines"] = out
         d["vendorInfo"] = dict(v) if v else None
+        d["bills"] = [{"id": x["id"], "number": x["number"], "total": x["total"], "void": x["void"]}
+                      for x in q("SELECT DISTINCT b.* FROM bills b JOIN bill_lines bl ON bl.bill_id=b.id WHERE bl.po_id=? ORDER BY b.id", p["id"])]
         d["receipts"] = []
         for rc in q("SELECT * FROM receipts WHERE po_id=? ORDER BY id", p["id"]):
             rls = [dict(x, status=(q1("SELECT status FROM jobs WHERE id=?", x["job_id"]) or {"status": "?"})["status"],
@@ -2274,6 +2289,439 @@ def build_pdf(pages):
     out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n" + "".join(f"{n:010d} 00000 n \n" for n in offs)
     out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
     return out.encode("latin-1")
+
+
+# ---------------------------------------------------------------- vendor invoices (bills you pay), payments and credits
+# An invoice is entered against one or more of the vendor's POs (or none): its lines start from what was ordered and
+# received, and it's checked three ways (ordered, received, billed). Saved with "use for costs", its prices and its
+# freight and fees become the landed cost of what it bills. Payments (one check can pay several invoices) and vendor
+# credits are applied to invoices; what's left is what you owe. Money: the shop password, never a station terminal.
+BILL_FILES = os.path.join(os.path.dirname(os.path.abspath(CFG["db"])), "bills")
+PAY_METHODS = ("Check", "ACH / bank transfer", "Card", "Cash", "Other")
+
+
+def _r2(x):
+    return round(float(x or 0) + 0.0, 2)
+
+
+def _day(v, what):
+    v = str(v or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        raise ApiError(400, f"{what} should be a date")
+    try:
+        datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        raise ApiError(400, f"{what} isn't a real date")
+    return v
+
+
+def terms_days(terms):
+    """Net 30 -> 30, Due on receipt / COD -> 0; anything else (or nothing): 30."""
+    t = str(terms or "").lower()
+    m = re.search(r"net\s*(\d{1,3})", t) or re.search(r"(\d{1,3})\s*days?", t)
+    if m:
+        return int(m.group(1))
+    if re.search(r"receipt|cod|c\.o\.d|prepaid|due now", t):
+        return 0
+    return 30
+
+
+def today_local():
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+
+def bill_paid(bid):
+    return _r2(q1("SELECT COALESCE(SUM(amount),0) n FROM applications WHERE bill_id=?", bid)["n"])
+
+
+def credit_used(cid):
+    return _r2(q1("SELECT COALESCE(SUM(amount),0) n FROM applications WHERE credit_id=?", cid)["n"])
+
+
+def bill_state(b):
+    """open / partial / paid / void, how much is owed (or, for a credit, still to use), and overdue / due soon."""
+    if b["void"]:
+        return {"status": "void", "owed": 0.0, "paid": 0.0, "flag": ""}
+    if b["kind"] == "credit":
+        used = credit_used(b["id"])
+        left = _r2(b["total"] - used)
+        return {"status": "used" if left <= 0.004 else "available", "owed": 0.0, "paid": used, "left": left, "flag": ""}
+    paid = bill_paid(b["id"])
+    owed = _r2(b["total"] - paid)
+    status = "paid" if owed <= 0.004 else "partial" if paid > 0.004 else "open"
+    flag = ""
+    if status != "paid" and b["due"]:
+        t = today_local()
+        if b["due"] < t:
+            flag = "overdue"
+        elif b["due"] <= (datetime.strptime(t, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d"):
+            flag = "due soon"
+    return {"status": status, "owed": max(0.0, owed), "paid": paid, "flag": flag}
+
+
+def po_line_billing(line_id, not_bill=None):
+    """How much of a PO line has been billed (on invoices that aren't void), leaving one invoice out if asked."""
+    r = q1("SELECT COALESCE(SUM(bl.qty),0) n FROM bill_lines bl JOIN bills b ON b.id=bl.bill_id WHERE bl.po_line_id=? "
+           "AND b.void=0 AND b.kind='bill'" + (" AND b.id!=?" if not_bill else ""), *([line_id, not_bill] if not_bill else [line_id]))
+    return float(r["n"] or 0)
+
+
+def bill_match(b, lines):
+    """The three-way match: for each line on a PO, what was ordered, received, billed (on every invoice), at what price."""
+    out, issues = [], 0
+    for ln in lines:
+        e = dict(ln)
+        notes = []
+        if ln["po_line_id"]:
+            pl = q1("SELECT pl.*, p.number FROM po_lines pl JOIN pos p ON p.id=pl.po_id WHERE pl.id=?", ln["po_line_id"])
+            if pl:
+                got, going = line_progress(pl["id"])
+                ordered = pl["qty"] - pl["cancelled"]
+                billed = po_line_billing(pl["id"])
+                e.update(po_number=pl["number"], ordered=ordered, received=got, billedAll=billed, poCost=pl["cost"] or 0)
+                if not b["void"] and b["kind"] == "bill":
+                    if billed > got + 0.0001:
+                        notes.append(f"Billed {billed:g} but {got:g} received")
+                    if billed > ordered + 0.0001:
+                        notes.append(f"Billed {billed:g} but {ordered:g} ordered")
+                    if (pl["cost"] or 0) > 0 and abs((ln["price"] or 0) - pl["cost"]) > 0.005:
+                        notes.append(f"Price ${ln['price'] or 0:,.2f}, PO says ${pl['cost']:,.2f}")
+        else:
+            e["po_number"] = ""
+        e["issues"] = notes
+        issues += len(notes)
+        out.append(e)
+    return out, issues
+
+
+def bill_out(b, full=True):
+    v = q1("SELECT name, terms FROM vendors WHERE id=?", b["vendor_id"])
+    d = dict(b)
+    d["vendor"] = v["name"] if v else "(removed vendor)"
+    d.update(bill_state(b))
+    lines = q("SELECT * FROM bill_lines WHERE bill_id=? ORDER BY id", b["id"])
+    d["pos"] = sorted({x["number"] for x in q("SELECT DISTINCT p.number FROM bill_lines bl JOIN pos p ON p.id=bl.po_id WHERE bl.bill_id=?", b["id"])})
+    match, issues = bill_match(b, lines)
+    d["issues"] = issues
+    if full:
+        d["lines"] = match
+        d["applications"] = [dict(a, payment=dict(q1("SELECT date, method, reference, amount FROM payments WHERE id=?", a["payment_id"]) or {})
+                                  if a["payment_id"] else None,
+                                  credit=dict(q1("SELECT number, date FROM bills WHERE id=?", a["credit_id"]) or {}) if a["credit_id"] else None)
+                             for a in q("SELECT * FROM applications WHERE bill_id=? OR credit_id=? ORDER BY id", b["id"], b["id"])]
+        d["hasFile"] = bool(b["file"])
+    return d
+
+
+def list_bills(status="", vendor=0):
+    rows = q("SELECT * FROM bills" + (" WHERE vendor_id=?" if vendor else "") + " ORDER BY COALESCE(due, date) DESC, id DESC LIMIT 1000",
+             *([vendor] if vendor else []))
+    out = []
+    for b in rows:
+        d = bill_out(b, full=False)
+        if status == "open" and not (d["status"] in ("open", "partial") or d["status"] == "available"):
+            continue
+        if status == "overdue" and d["flag"] != "overdue":
+            continue
+        if status in ("paid", "void") and d["status"] != status:
+            continue
+        if status == "credits" and b["kind"] != "credit":
+            continue
+        out.append(d)
+    return out
+
+
+def payables():
+    """What's owed: overdue, due within a week, later; and by vendor."""
+    tot = {"overdue": 0.0, "soon": 0.0, "later": 0.0, "credits": 0.0, "count": 0}
+    vend = {}
+    for b in q("SELECT * FROM bills WHERE void=0"):
+        st = bill_state(b)
+        name = (q1("SELECT name FROM vendors WHERE id=?", b["vendor_id"]) or {"name": "?"})["name"]
+        e = vend.setdefault(b["vendor_id"], {"vendor_id": b["vendor_id"], "vendor": name, "owed": 0.0, "credits": 0.0, "overdue": 0.0})
+        if b["kind"] == "credit":
+            tot["credits"] += st.get("left", 0)
+            e["credits"] += st.get("left", 0)
+            continue
+        if st["owed"] <= 0.004:
+            continue
+        tot["count"] += 1
+        key = "overdue" if st["flag"] == "overdue" else "soon" if st["flag"] == "due soon" else "later"
+        tot[key] += st["owed"]
+        e["owed"] += st["owed"]
+        if st["flag"] == "overdue":
+            e["overdue"] += st["owed"]
+    for k in ("overdue", "soon", "later", "credits"):
+        tot[k] = _r2(tot[k])
+    return {"totals": tot, "vendors": sorted([dict(v, owed=_r2(v["owed"]), credits=_r2(v["credits"]), overdue=_r2(v["overdue"]))
+                                              for v in vend.values() if v["owed"] > 0.004 or v["credits"] > 0.004],
+                                             key=lambda v: -v["owed"])}
+
+
+def bill_prefill(vendor_id, po_ids, not_bill=None):
+    """Lines for a new invoice from these POs: each line received but not yet billed, at the PO's price."""
+    out = []
+    for pid in po_ids:
+        p = q1("SELECT * FROM pos WHERE id=? AND vendor_id=?", pid, vendor_id)
+        if not p:
+            raise ApiError(400, f"PO {pid} isn't from this vendor")
+        for pl in q("SELECT * FROM po_lines WHERE po_id=? ORDER BY id", pid):
+            got, going = line_progress(pl["id"])
+            billed = po_line_billing(pl["id"], not_bill)
+            ordered = pl["qty"] - pl["cancelled"]
+            out.append({"po_line_id": pl["id"], "po_id": pid, "po_number": p["number"], "item_id": pl["item_id"],
+                        "description": pl["name"] + (f" ({pl['vendor_sku']})" if pl["vendor_sku"] else ""), "sku": pl["sku"],
+                        "ordered": ordered, "received": got, "billed": billed,
+                        "qty": max(0, got - billed) if got else max(0, ordered - billed), "price": pl["cost"] or 0})
+    return out
+
+
+def _check_file(f):
+    """An attached invoice copy, checked before anything is saved: (data, extension, name), or None."""
+    if not f:
+        return None
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(f.get("name") or "invoice"))[:80] or "invoice"
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".heic", ".gif"):
+        raise ApiError(400, "Attach a PDF or a photo (PDF, JPG, PNG, WEBP, HEIC)")
+    try:
+        data = base64.b64decode(str(f.get("data") or ""), validate=True)
+    except (ValueError, TypeError):
+        raise ApiError(400, "The attached file didn't come through")
+    if not data or len(data) > 12_000_000:
+        raise ApiError(400, "The attached file should be under 12 MB")
+    return data, ext, name
+
+
+def _save_file(bid, checked):
+    if not checked:
+        return None, None
+    data, ext, name = checked
+    os.makedirs(BILL_FILES, exist_ok=True)
+    stored = f"{bid}-{uuid.uuid4().hex[:6]}{ext}"
+    with open(os.path.join(BILL_FILES, stored), "wb") as fh:
+        fh.write(data)
+    return stored, name
+
+
+def apply_bill_costs(bid):
+    """The invoice's prices, freight and fees become the landed cost of the parts it bills (their receipt lines)."""
+    b = q1("SELECT * FROM bills WHERE id=?", bid)
+    if not b or b["void"] or b["kind"] != "bill" or not b["apply_costs"]:
+        return 0
+    lines = [l for l in q("SELECT * FROM bill_lines WHERE bill_id=? AND po_line_id IS NOT NULL AND qty>0", bid)]
+    if not lines:
+        return 0
+    extra = (b["freight"] or 0) + (b["fees"] or 0)
+    landed = allocate_landed([(l["qty"], l["price"] or 0) for l in lines], extra)
+    n = 0
+    with Tx() as c:
+        for l, lu in zip(lines, landed):
+            n += c.execute("UPDATE receipt_lines SET unit_cost=?, landed_unit=? WHERE po_line_id=?",
+                           (l["price"] or 0, lu, l["po_line_id"])).rowcount
+    v = b["vendor_id"]
+    for l in lines:
+        if l["item_id"] and (l["price"] or 0) > 0:
+            remember_vendor_item(v, l["item_id"], None, l["price"])
+    return n
+
+
+def save_bill(b, by=""):
+    vid = _int(b.get("vendor_id"), 1, 10 ** 9, "Vendor")
+    v = q1("SELECT * FROM vendors WHERE id=?", vid)
+    if not v:
+        raise ApiError(400, "Pick a vendor")
+    kind = "credit" if b.get("kind") == "credit" else "bill"
+    number = _text(b.get("number"), 60)
+    if not number:
+        raise ApiError(400, "Give the vendor's invoice number" if kind == "bill" else "Give the credit's number")
+    date = _day(b.get("date"), "Invoice date")
+    terms = _text(b.get("terms"), 40) if b.get("terms") is not None else (v["terms"] or "")
+    due = _day(b.get("due"), "Due date") if b.get("due") else \
+        (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=terms_days(terms))).strftime("%Y-%m-%d")
+    freight, fees, tax = (_money(b.get(k) or 0, k.capitalize()) for k in ("freight", "fees", "tax"))
+    raw = b.get("lines") or []
+    if not isinstance(raw, list) or len(raw) > 500:
+        raise ApiError(400, "Up to 500 lines")
+    bid = b.get("id")
+    lines, seen = [], set()
+    for ln in raw:
+        plid = ln.get("po_line_id")
+        po_id, item_id = None, ln.get("item_id")
+        if plid:
+            pl = q1("SELECT pl.*, p.vendor_id FROM po_lines pl JOIN pos p ON p.id=pl.po_id WHERE pl.id=?", int(plid))
+            if not pl or pl["vendor_id"] != vid:
+                raise ApiError(400, "A line is from another vendor's PO")
+            if pl["id"] in seen:
+                raise ApiError(400, f"{pl['name']} is on the invoice twice")
+            seen.add(pl["id"])
+            po_id, item_id = pl["po_id"], pl["item_id"]
+        try:
+            qty = round(float(ln.get("qty") or 0), 3)
+        except (TypeError, ValueError):
+            raise ApiError(400, "A quantity isn't a number")
+        if not 0 <= qty <= 100000:
+            raise ApiError(400, "A quantity is out of range")
+        price = _money(ln.get("price") or 0, "A price", -1_000_000)
+        desc = _text(ln.get("description"), 200)
+        if not plid and not desc:
+            raise ApiError(400, "A line without a PO needs a description")
+        if qty == 0 and plid:
+            continue   # a PO line not on this invoice
+        lines.append((plid and int(plid), po_id, item_id, desc, qty, price, _r2(qty * price)))
+    if not lines and kind == "bill" and not (freight or fees or tax):
+        raise ApiError(400, "The invoice has nothing on it")
+    attached = _check_file(b.get("file"))   # a refused attachment stops the whole save
+    subtotal = _r2(sum(l[6] for l in lines))
+    total = _r2(subtotal + freight + fees + tax)
+    if kind == "credit" and total <= 0:
+        raise ApiError(400, "A credit's amount should be more than 0")
+    now = now_iso()
+    with Tx() as c:
+        if bid:
+            old = c.execute("SELECT * FROM bills WHERE id=?", (int(bid),)).fetchone()
+            if not old:
+                raise ApiError(404, "No such invoice")
+            if old["void"]:
+                raise ApiError(409, "That invoice is void")
+            applied = c.execute("SELECT COALESCE(SUM(amount),0) n FROM applications WHERE bill_id=? OR credit_id=?", (old["id"], old["id"])).fetchone()["n"]
+            if applied and total + 0.004 < applied:
+                raise ApiError(409, f"${applied:,.2f} has already been paid or applied against it: its total can't go below that")
+            c.execute("UPDATE bills SET vendor_id=?, kind=?, number=?, date=?, due=?, terms=?, subtotal=?, freight=?, fees=?, tax=?, total=?, "
+                      "notes=?, apply_costs=?, updated_at=? WHERE id=?",
+                      (vid, kind, number, date, due, terms, subtotal, freight, fees, tax, total, _text(b.get("notes"), 1000),
+                       0 if b.get("apply_costs") is False else 1, now, old["id"]))
+            c.execute("DELETE FROM bill_lines WHERE bill_id=?", (old["id"],))
+            bid = old["id"]
+        else:
+            dup = c.execute("SELECT id FROM bills WHERE vendor_id=? AND number=? AND kind=? AND void=0", (vid, number, kind)).fetchone()
+            if dup:
+                raise ApiError(409, f"{v['name']} invoice {number} is already entered")
+            bid = c.execute("INSERT INTO bills(vendor_id,kind,number,date,due,terms,subtotal,freight,fees,tax,total,notes,apply_costs,created_at,"
+                            "by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (vid, kind, number, date, due, terms, subtotal, freight, fees, tax, total, _text(b.get("notes"), 1000),
+                             0 if b.get("apply_costs") is False else 1, now, by, now)).lastrowid
+        for plid, po_id, item_id, desc, qty, price, amt in lines:
+            c.execute("INSERT INTO bill_lines(bill_id,po_line_id,po_id,item_id,description,qty,price,amount) VALUES(?,?,?,?,?,?,?,?)",
+                      (bid, plid, po_id, item_id, desc, qty, price, amt))
+    stored, name = _save_file(bid, attached)
+    if stored:
+        with DB_LOCK:
+            conn.execute("UPDATE bills SET file=?, file_name=? WHERE id=?", (stored, name, bid))
+    if kind == "bill":
+        apply_bill_costs(bid)
+    note_change("bill", "saved", f"{v['name']} {kind} {number}", f"${total:,.2f}", by)
+    bump()
+    return bill_out(q1("SELECT * FROM bills WHERE id=?", bid))
+
+
+def void_bill(bid, by=""):
+    b = q1("SELECT * FROM bills WHERE id=?", bid)
+    if not b:
+        raise ApiError(404, "No such invoice")
+    if q1("SELECT 1 FROM applications WHERE bill_id=? OR credit_id=?", bid, bid):
+        raise ApiError(409, "Payments or credits are applied to it: void those first")
+    with DB_LOCK:
+        conn.execute("UPDATE bills SET void=1, updated_at=? WHERE id=?", (now_iso(), bid))
+    note_change("bill", "voided", f"{b['kind']} {b['number']}", by=by)
+    bump()
+    return bill_out(q1("SELECT * FROM bills WHERE id=?", bid))
+
+
+def record_payment(b, by=""):
+    vid = _int(b.get("vendor_id"), 1, 10 ** 9, "Vendor")
+    v = q1("SELECT * FROM vendors WHERE id=?", vid)
+    if not v:
+        raise ApiError(400, "Pick a vendor")
+    amount = _money(b.get("amount"), "Amount")
+    if amount <= 0:
+        raise ApiError(400, "The amount should be more than 0")
+    method = b.get("method") if b.get("method") in PAY_METHODS else "Other"
+    date = _day(b.get("date"), "Payment date")
+    allocs = b.get("allocations") or []
+    if not isinstance(allocs, list) or not allocs:
+        raise ApiError(400, "Pick the invoices it pays")
+    total, rows = 0.0, []
+    for a in allocs:
+        bl = q1("SELECT * FROM bills WHERE id=?", _int(a.get("bill_id"), 1, 10 ** 12, "Invoice"))
+        if not bl or bl["vendor_id"] != vid or bl["kind"] != "bill" or bl["void"]:
+            raise ApiError(400, "An invoice isn't this vendor's, or is void")
+        amt = _money(a.get("amount"), "An amount")
+        if amt <= 0:
+            continue
+        owed = bill_state(bl)["owed"]
+        if amt > owed + 0.004:
+            raise ApiError(409, f"Invoice {bl['number']} only has ${owed:,.2f} left to pay")
+        total += amt
+        rows.append((bl["id"], amt))
+    if abs(_r2(total) - amount) > 0.004:
+        raise ApiError(400, f"The amounts on the invoices (${total:,.2f}) don't add up to the payment (${amount:,.2f})")
+    now = now_iso()
+    with Tx() as c:
+        pid = c.execute("INSERT INTO payments(vendor_id,date,amount,method,reference,notes,created_at,by) VALUES(?,?,?,?,?,?,?,?)",
+                        (vid, date, amount, method, _text(b.get("reference"), 60), _text(b.get("notes"), 500), now, by)).lastrowid
+        for bl_id, amt in rows:
+            c.execute("INSERT INTO applications(bill_id,payment_id,amount,at,by) VALUES(?,?,?,?,?)", (bl_id, pid, amt, now, by))
+    note_change("payment", "recorded", f"{v['name']} ${amount:,.2f}", f"{method} {_text(b.get('reference'), 60)}".strip(), by)
+    bump()
+    return {"id": pid}
+
+
+def void_payment(pid, by=""):
+    p = q1("SELECT * FROM payments WHERE id=? AND void=0", pid)
+    if not p:
+        raise ApiError(404, "No such payment")
+    with DB_LOCK:
+        conn.execute("DELETE FROM applications WHERE payment_id=?", (pid,))
+        conn.execute("UPDATE payments SET void=1 WHERE id=?", (pid,))
+    note_change("payment", "voided", f"${p['amount']:,.2f} {p['method']} {p['reference'] or ''}".strip(), by=by)
+    bump()
+
+
+def apply_credit(b, by=""):
+    cr = q1("SELECT * FROM bills WHERE id=? AND kind='credit' AND void=0", _int(b.get("credit_id"), 1, 10 ** 12, "Credit"))
+    bl = q1("SELECT * FROM bills WHERE id=? AND kind='bill' AND void=0", _int(b.get("bill_id"), 1, 10 ** 12, "Invoice"))
+    if not cr or not bl or cr["vendor_id"] != bl["vendor_id"]:
+        raise ApiError(400, "Pick a credit and an invoice from the same vendor")
+    amt = _money(b.get("amount"), "Amount")
+    left, owed = bill_state(cr)["left"], bill_state(bl)["owed"]
+    if amt <= 0 or amt > left + 0.004 or amt > owed + 0.004:
+        raise ApiError(409, f"Up to ${min(left, owed):,.2f} can be applied (the credit has ${left:,.2f}, the invoice owes ${owed:,.2f})")
+    with DB_LOCK:
+        conn.execute("INSERT INTO applications(bill_id,credit_id,amount,at,by) VALUES(?,?,?,?,?)", (bl["id"], cr["id"], amt, now_iso(), by))
+    note_change("credit", "applied", f"credit {cr['number']} -> invoice {bl['number']}", f"${amt:,.2f}", by)
+    bump()
+    return bill_out(bl)
+
+
+def list_payments(vendor=0):
+    out = []
+    for p in q("SELECT * FROM payments" + (" WHERE vendor_id=?" if vendor else "") + " ORDER BY date DESC, id DESC LIMIT 500",
+               *([vendor] if vendor else [])):
+        d = dict(p)
+        d["vendor"] = (q1("SELECT name FROM vendors WHERE id=?", p["vendor_id"]) or {"name": "?"})["name"]
+        d["bills"] = [dict(x) for x in q("SELECT b.id, b.number, a.amount FROM applications a JOIN bills b ON b.id=a.bill_id WHERE a.payment_id=?", p["id"])]
+        out.append(d)
+    return out
+
+
+def export_bills():
+    rows = [["Vendor", "Kind", "Invoice #", "Invoice date", "Due", "Terms", "POs", "Subtotal", "Freight", "Fees", "Tax", "Total",
+             "Paid or applied", "Still owed", "Status", "Differences", "Notes", "Entered by"]]
+    for b in q("SELECT * FROM bills ORDER BY date, id"):
+        d = bill_out(b, full=False)
+        rows.append([d["vendor"], b["kind"], b["number"], b["date"], b["due"], b["terms"], " ".join(d["pos"]), b["subtotal"], b["freight"],
+                     b["fees"], b["tax"], b["total"], d["paid"], d["owed"], d["status"] + (f" ({d['flag']})" if d["flag"] else ""),
+                     d["issues"], b["notes"], b["by"]])
+    return csv_bytes(rows)
+
+
+def export_payments():
+    rows = [["Date", "Vendor", "Amount", "Method", "Check # / reference", "Invoices paid", "Notes", "Recorded by", "Void"]]
+    for p in list_payments():
+        rows.append([p["date"], p["vendor"], p["amount"], p["method"], p["reference"],
+                     "; ".join(f"{x['number']} ${x['amount']:,.2f}" for x in p["bills"]), p["notes"], p["by"], "void" if p["void"] else ""])
+    return csv_bytes(rows)
 
 
 # ---------------------------------------------------------------- reorder points: parts that need ordering, drafted automatically
@@ -3707,6 +4155,14 @@ def run_backup(reason="scheduled"):
         try:
             for name, data in files.items():
                 dbx_upload(f"{folder}/{name}", data)
+            done = set(meta_get("bill_files_backed", []) or [])
+            if os.path.isdir(BILL_FILES):
+                for fn in sorted(os.listdir(BILL_FILES)):
+                    if fn not in done:
+                        with open(os.path.join(BILL_FILES, fn), "rb") as fh:
+                            dbx_upload(f"{base}/invoice-copies/{fn}", fh.read())
+                        done.add(fn)
+                meta_set("bill_files_backed", sorted(done))
             pruned = dbx_prune(base, int(d.get("keep_days") or 90))
         except DbxError as e:
             d = dbx_conf()
@@ -3875,7 +4331,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ApiError(400, "Bad request length")
-        if n > 5_000_000:
+        if n > 20_000_000:
             raise ApiError(413, "That request is too large")
         if not n:
             return {}
@@ -4020,6 +4476,35 @@ class Handler(BaseHTTPRequestHandler):
                 "WHERE vi.vendor_id=? AND i.scope='shop' ORDER BY i.name COLLATE NOCASE", vid)]})
         if path == "/api/order":
             return self.send(200, {"order": order_view(find_order((qs.get("code") or [""])[0]))})
+        if path in ("/api/bills", "/api/bill", "/api/bill/prefill", "/api/bill/file", "/api/payables", "/api/payments",
+                    "/api/bills.csv", "/api/payments.csv"):
+            self.need_manage("Vendor invoices and payments")
+            if path == "/api/bills":
+                return self.send(200, {"bills": list_bills((qs.get("status") or [""])[0], qint(qs, "vendor", 0))})
+            if path == "/api/bill":
+                b = q1("SELECT * FROM bills WHERE id=?", qint(qs, "id", 0))
+                if not b:
+                    raise ApiError(404, "No such invoice")
+                return self.send(200, {"bill": bill_out(b)})
+            if path == "/api/bill/prefill":
+                ids = [int(x) for x in (qs.get("pos") or [""])[0].split(",") if x.strip().isdigit()][:50]
+                return self.send(200, {"lines": bill_prefill(qint(qs, "vendor", 0), ids, qint(qs, "bill", 0) or None)})
+            if path == "/api/bill/file":
+                b = q1("SELECT * FROM bills WHERE id=?", qint(qs, "id", 0))
+                if not b or not b["file"] or not os.path.exists(os.path.join(BILL_FILES, b["file"])):
+                    raise ApiError(404, "No copy of that invoice is attached")
+                ext = os.path.splitext(b["file"])[1].lower()
+                ctype = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                         ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic"}.get(ext, "application/octet-stream")
+                with open(os.path.join(BILL_FILES, b["file"]), "rb") as fh:
+                    return self.send(200, fh.read(), ctype, {"Content-Disposition": f'inline; filename="{b["file_name"] or b["file"]}"'})
+            if path == "/api/payables":
+                return self.send(200, payables())
+            if path == "/api/payments":
+                return self.send(200, {"payments": list_payments(qint(qs, "vendor", 0))})
+            if path == "/api/bills.csv":
+                return self.csv(f"wojtek-stock-vendor-invoices-{datetime.now(LOCAL_TZ):%Y-%m-%d}.csv", export_bills())
+            return self.csv(f"wojtek-stock-payments-{datetime.now(LOCAL_TZ):%Y-%m-%d}.csv", export_payments())
         if path == "/api/labels/zebra-preview":
             return self.send(200, zebra_preview(qs), "image/svg+xml")
         if path == "/api/nosku":
@@ -4058,6 +4543,8 @@ class Handler(BaseHTTPRequestHandler):
                              (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"))["n"],
         }
         if self.can_manage():
+            pt = payables()["totals"]
+            out["payables"] = {"overdue": pt["overdue"], "soon": pt["soon"], "count": pt["count"]}
             out["terminals"] = [dict(r) for r in q("SELECT id, name, created_at, last_seen, last_ip FROM terminals "
                                                    "WHERE active=1 ORDER BY created_at")]
         return out
@@ -4086,6 +4573,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/po/action":
             by, _ = self.who_for_write()
             return self.send(200, {"po": po_action(b, by)})
+        if path in ("/api/bill", "/api/bill/void", "/api/payment", "/api/payment/void", "/api/credit/apply"):
+            self.need_manage("Vendor invoices and payments")
+            by = self.actor()
+            if path == "/api/bill":
+                return self.send(200, {"bill": save_bill(b, by)})
+            if path == "/api/bill/void":
+                return self.send(200, {"bill": void_bill(_int(b.get("id"), 1, 10 ** 12, "Invoice"), by)})
+            if path == "/api/payment":
+                return self.send(200, record_payment(b, by))
+            if path == "/api/payment/void":
+                void_payment(_int(b.get("id"), 1, 10 ** 12, "Payment"), by)
+                return self.send(200, {"ok": True})
+            return self.send(200, {"bill": apply_credit(b, by)})
         if path == "/api/po/email":
             by, _ = self.who_for_write()
             return self.send(200, {"po": email_po(_int(b.get("id"), 1, 10 ** 9, "PO"), by)})
