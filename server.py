@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v14"
+VERSION = "v15"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -245,6 +245,15 @@ CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, vendor
 CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER, payment_id INTEGER, credit_id INTEGER,
     amount REAL, at TEXT, by TEXT);
 CREATE INDEX IF NOT EXISTS applications_bill ON applications(bill_id);
+CREATE TABLE IF NOT EXISTS sales(order_id INTEGER, item_id INTEGER, day TEXT, qty REAL, total REAL, channel TEXT,
+    PRIMARY KEY(order_id, item_id));
+CREATE INDEX IF NOT EXISTS sales_item ON sales(item_id);
+CREATE INDEX IF NOT EXISTS sales_day ON sales(day);
+CREATE TABLE IF NOT EXISTS snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, kind TEXT, at TEXT, by TEXT, items INTEGER,
+    units REAL, value REAL, no_cost INTEGER);
+CREATE TABLE IF NOT EXISTS snapshot_items(snapshot_id INTEGER, item_id INTEGER, name TEXT, sku TEXT, category TEXT, vendor TEXT,
+    stock INTEGER, cost REAL, value REAL);
+CREATE INDEX IF NOT EXISTS snapshot_items_snap ON snapshot_items(snapshot_id);
 CREATE TABLE IF NOT EXISTS gb_listings(gb_id INTEGER PRIMARY KEY, title TEXT, sku TEXT, qty INTEGER, fixed INTEGER,
     price REAL, item_id INTEGER, why TEXT, want INTEGER, pushed_qty INTEGER, pushed_at TEXT, error TEXT, seen_at TEXT);
 CREATE TABLE IF NOT EXISTS gb_orders(gb_order_id INTEGER PRIMARY KEY, at TEXT, buyer TEXT, total REAL, status TEXT,
@@ -654,6 +663,96 @@ def prog_public():
     return out
 
 
+# ---------------------------------------------------------------- sales history (for reports): each order's lines
+ORDER_FIELDS = "id,status,date_created_gmt,date_modified_gmt,created_via,meta_data,line_items"
+NOT_SALES = ("cancelled", "failed", "refunded", "trash", "checkout-draft", "pending", "draft")
+
+
+def order_channel(o):
+    """Where an order came from: GunBroker (brought in by Wojtek Stock), the register (WooCommerce POS), the website."""
+    for m in o.get("meta_data") or []:
+        if isinstance(m, dict) and m.get("key") == "_gunbroker_order_id":
+            return "GunBroker"
+    via = str(o.get("created_via") or "").lower()
+    if "pos" in via:
+        return "Register"
+    if via in ("checkout", "store-api", ""):
+        return "Website"
+    return via.replace("-", " ").capitalize()
+
+
+def record_sales(orders):
+    """Each order's lines, kept per product (a variation counts as itself). An order cancelled or refunded later is
+    taken back out."""
+    rows, gone = [], []
+    for o in orders:
+        oid = int(o.get("id") or 0)
+        if not oid:
+            continue
+        gone.append(oid)
+        if o.get("status") in NOT_SALES:
+            continue
+        d = parse_iso(o.get("date_created_gmt"))
+        day = d.astimezone(LOCAL_TZ).strftime("%Y-%m-%d") if d else today_local_day()
+        ch = order_channel(o)
+        per = {}
+        for li in o.get("line_items") or []:
+            iid = int(li.get("variation_id") or 0) or int(li.get("product_id") or 0)
+            if not iid:
+                continue
+            q_, t_ = per.get(iid, (0.0, 0.0))
+            try:
+                per[iid] = (q_ + float(li.get("quantity") or 0), t_ + float(li.get("total") or 0))
+            except (TypeError, ValueError):
+                continue
+        rows += [(oid, iid, day, qn, round(tot, 2), ch) for iid, (qn, tot) in per.items()]
+    if not gone:
+        return 0
+    with Tx() as c:
+        c.executemany("DELETE FROM sales WHERE order_id=?", [(g,) for g in gone])
+        c.executemany("INSERT OR REPLACE INTO sales(order_id,item_id,day,qty,total,channel) VALUES(?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
+def today_local_day():
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+
+SALES_LOCK = threading.Lock()
+
+
+def load_sales_history(days=400, by="Wojtek Stock"):
+    """Read the past orders once (and on request), for the sales reports: page by page, in the background."""
+    if not SALES_LOCK.acquire(blocking=False):
+        raise ApiError(409, "Sales history is already being read")
+    try:
+        after = (datetime.now(timezone.utc) - timedelta(days=int(days))).strftime("%Y-%m-%dT%H:%M:%S")
+        meta_set("sales_history", {"running": True, "from": after[:10], "pages": 0, "started": now_iso()})
+        bump()
+        n = 0
+
+        def page(p, total, items):
+            meta_set("sales_history", {"running": True, "from": after[:10], "pages": p, "of": total, "orders": items, "started": now_iso()})
+            bump()
+        batch = []
+        for o in woo_pages("/orders", {"after": after, "dates_are_gmt": "true", "status": "any", "_fields": ORDER_FIELDS}, on_page=page):
+            batch.append(o)
+            if len(batch) >= 200:
+                n += record_sales(batch)
+                batch = []
+        n += record_sales(batch)
+        meta_set("sales_history", {"running": False, "from": after[:10], "loaded": now_iso(), "lines": n})
+        log.info("Sales history: %d order lines since %s", n, after[:10])
+        bump()
+        return n
+    except WooError as e:
+        meta_set("sales_history", {"running": False, "error": str(e), "from": after[:10]})
+        bump()
+        raise
+    finally:
+        SALES_LOCK.release()
+
+
 # ---------------------------------------------------------------- sync: the local copy of the product list
 SYNC_LOCK = threading.Lock()
 _sync_now = {"full": False, "inc": False}
@@ -831,7 +930,8 @@ def inc_sync(reason="scheduled"):
         note_cats(changed)
         upsert_rows([product_row(p) for p in changed], started)
         orders = list(woo_pages("/orders", {"modified_after": since_s, "dates_are_gmt": "true", "status": "any",
-                                            "_fields": "id,line_items,date_modified_gmt"}))
+                                            "_fields": ORDER_FIELDS}))
+        record_sales(orders)
         touched, var_parents = set(), set()
         touch_rows = []
         for o in orders:
@@ -2724,6 +2824,254 @@ def export_payments():
     return csv_bytes(rows)
 
 
+# ---------------------------------------------------------------- reports: inventory value, sales, margins, purchasing, snapshots
+# The shop password only (costs and money). A part's cost is its average landed cost from receipts WooCommerce
+# confirmed; with none yet, its vendor's last price; with neither, it's listed as having no cost (and counts as 0).
+def cost_table():
+    """{item_id: (cost, where it came from)} for every in-shop part."""
+    out = {}
+    for r in q("SELECT rl.item_id, SUM(rl.qty * rl.landed_unit) v, SUM(rl.qty) n FROM receipt_lines rl JOIN jobs j ON j.id=rl.job_id "
+               "WHERE j.status='done' GROUP BY rl.item_id"):
+        if r["n"]:
+            out[r["item_id"]] = (round(r["v"] / r["n"], 4), "landed")
+    for r in q("SELECT item_id, last_cost FROM vendor_items WHERE last_cost IS NOT NULL AND last_cost>0 ORDER BY updated_at"):
+        if r["item_id"] not in out:
+            out[r["item_id"]] = (r["last_cost"], "vendor price")
+    return out
+
+
+def item_vendor_names():
+    names = {v["id"]: v["name"] for v in q("SELECT id, name FROM vendors")}
+    out = {}
+    for r in q("SELECT item_id, vendor_id FROM vendor_items ORDER BY updated_at"):
+        out[r["item_id"]] = names.get(r["vendor_id"], "")
+    for r in q("SELECT item_id, vendor_id FROM reorder WHERE vendor_id IS NOT NULL"):
+        out[r["item_id"]] = names.get(r["vendor_id"], out.get(r["item_id"], ""))
+    return out
+
+
+def shop_items_full():
+    """In-shop parts with their category names (a variation's are its parent's) and price."""
+    names = cat_names()
+    pcats = {r["id"]: r["cats"] for r in q("SELECT id, cats FROM items WHERE type='variable'")}
+    out = []
+    for r in q("SELECT * FROM items WHERE scope='shop' ORDER BY name COLLATE NOCASE, attrs"):
+        cats = json.loads((pcats.get(r["parent_id"]) if r["parent_id"] else r["cats"]) or "[]")
+        out.append({"id": r["id"], "name": label_name(r), "sku": r["sku"] or "", "stock": r["stock"] or 0,
+                    "price": float(r["price"]) if str(r["price"] or "").replace(".", "", 1).isdigit() else None,
+                    "category": ", ".join(names[c] for c in cats if c in names) or "(no category)"})
+    return out
+
+
+def report_inventory():
+    costs, vend = cost_table(), item_vendor_names()
+    items, cats, vends = [], {}, {}
+    total = units = 0.0
+    no_cost = 0
+    for it in shop_items_full():
+        c, src = costs.get(it["id"], (None, ""))
+        stock = max(0, it["stock"])
+        value = round(stock * (c or 0), 2)
+        if c is None and stock > 0:
+            no_cost += 1
+        e = dict(it, cost=c, costFrom=src, value=value, vendor=vend.get(it["id"], ""))
+        items.append(e)
+        total += value
+        units += stock
+        for key, bucket in ((it["category"], cats), (e["vendor"] or "(no vendor)", vends)):
+            b = bucket.setdefault(key, {"name": key, "items": 0, "units": 0, "value": 0.0})
+            b["items"] += 1
+            b["units"] += stock
+            b["value"] += value
+    fix = lambda d: sorted([dict(v, value=round(v["value"], 2)) for v in d.values()], key=lambda v: -v["value"])
+    items.sort(key=lambda x: -x["value"])
+    return {"total": round(total, 2), "units": units, "items": items, "noCost": no_cost, "byCategory": fix(cats), "byVendor": fix(vends)}
+
+
+def _period(qs):
+    def day(k):
+        v = (qs.get(k) or [""])[0]
+        return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else ""
+    days = qint(qs, "days", 90, 1, 3660)
+    end = day("to") or today_local_day()
+    start = day("from") or (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    if start > end:
+        raise ApiError(400, "The period's start is after its end")
+    return start, end
+
+
+def report_sales(start, end):
+    costs = cost_table()
+    shop = {it["id"]: it for it in shop_items_full()}
+    hist = meta_get("sales_history", {}) or {}
+    rows = q("SELECT item_id, SUM(qty) qty, SUM(total) total, COUNT(DISTINCT order_id) orders FROM sales WHERE day BETWEEN ? AND ? "
+             "GROUP BY item_id", start, end)
+    chans = q("SELECT channel, SUM(qty) qty, SUM(total) total, COUNT(DISTINCT order_id) orders FROM sales s WHERE day BETWEEN ? AND ? "
+              "AND item_id IN (SELECT id FROM items WHERE scope='shop') GROUP BY channel ORDER BY total DESC", start, end)
+    items, revenue, cogs, units, costed, uncosted = [], 0.0, 0.0, 0.0, 0.0, 0
+    for r in rows:
+        it = shop.get(r["item_id"])
+        if not it:
+            continue   # feed products and guns sell too, but these are the in-shop reports
+        c = costs.get(r["item_id"], (None, ""))[0]
+        cg = round(r["qty"] * c, 2) if c is not None else None
+        items.append({"id": it["id"], "name": it["name"], "sku": it["sku"], "category": it["category"], "qty": r["qty"],
+                      "revenue": round(r["total"], 2), "cogs": cg, "profit": round(r["total"] - cg, 2) if cg is not None else None,
+                      "stock": it["stock"], "orders": r["orders"]})
+        revenue += r["total"]
+        units += r["qty"]
+        if cg is None:
+            uncosted += 1   # no cost known: left out of cost and profit, rather than counted as free
+        else:
+            cogs += cg
+            costed += r["total"]
+    items.sort(key=lambda x: -x["revenue"])
+    sold = {r["item_id"] for r in rows}
+    slow = [dict(it, value=round(max(0, it["stock"]) * (costs.get(it["id"], (0, ""))[0] or 0), 2))
+            for it in shop.values() if it["stock"] > 0 and it["id"] not in sold]
+    slow.sort(key=lambda x: -x["value"])
+    last = {r["item_id"]: r["d"] for r in q("SELECT item_id, MAX(day) d FROM sales GROUP BY item_id")}
+    cutoff = (datetime.strptime(today_local_day(), "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
+    dead = [dict(it, lastSold=last.get(it["id"]) or "", value=round(max(0, it["stock"]) * (costs.get(it["id"], (0, ""))[0] or 0), 2))
+            for it in shop.values() if it["stock"] > 0 and (last.get(it["id"]) or "") < cutoff]
+    dead.sort(key=lambda x: -x["value"])
+    return {"from": start, "to": end, "units": units, "revenue": round(revenue, 2), "cogs": round(cogs, 2),
+            "profit": round(costed - cogs, 2), "costedRevenue": round(costed, 2), "uncosted": uncosted, "items": items, "channels": [dict(c, total=round(c["total"], 2)) for c in chans],
+            "slow": slow, "dead": dead, "deadSince": cutoff, "history": hist}
+
+
+def report_margins(threshold=20.0):
+    costs = cost_table()
+    out = []
+    for it in shop_items_full():
+        c, src = costs.get(it["id"], (None, ""))
+        if it["price"] is None or c is None:
+            m = None
+        else:
+            m = round((it["price"] - c) / it["price"] * 100, 1) if it["price"] > 0 else None
+        flag = "loss" if m is not None and m < 0 else "thin" if m is not None and m < threshold else ""
+        out.append(dict(it, cost=c, costFrom=src, margin=m, profit=round(it["price"] - c, 2) if m is not None else None, flag=flag))
+    out.sort(key=lambda x: (x["margin"] is None, x["margin"] if x["margin"] is not None else 0))
+    return {"threshold": threshold, "items": out, "loss": sum(1 for x in out if x["flag"] == "loss"),
+            "thin": sum(1 for x in out if x["flag"] == "thin"), "unknown": sum(1 for x in out if x["margin"] is None)}
+
+
+def report_purchasing(months=12):
+    months = max(1, min(36, int(months)))
+    now = datetime.now(LOCAL_TZ)
+    keys = []
+    y, m = now.year, now.month
+    for _ in range(months):
+        keys.append(f"{y:04d}-{m:02d}")
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+    keys.reverse()
+    names = {v["id"]: v["name"] for v in q("SELECT id, name FROM vendors")}
+    billed = {}
+    for b in q("SELECT vendor_id, substr(date,1,7) mo, SUM(CASE WHEN kind='credit' THEN -total ELSE total END) t FROM bills "
+               "WHERE void=0 GROUP BY vendor_id, mo"):
+        if b["mo"] in keys:
+            billed.setdefault(names.get(b["vendor_id"], "?"), {})[b["mo"]] = round(b["t"], 2)
+    received = {k: 0.0 for k in keys}
+    for r in q("SELECT r.at, rl.qty, rl.landed_unit FROM receipt_lines rl JOIN receipts r ON r.id=rl.receipt_id JOIN jobs j ON j.id=rl.job_id "
+               "WHERE j.status='done'"):
+        d = parse_iso(r["at"])
+        k = d.astimezone(LOCAL_TZ).strftime("%Y-%m") if d else ""
+        if k in received:
+            received[k] += r["qty"] * (r["landed_unit"] or 0)
+    aging = {}
+    today = today_local_day()
+    for b in q("SELECT * FROM bills WHERE void=0 AND kind='bill'"):
+        st = bill_state(b)
+        if st["owed"] <= 0.004:
+            continue
+        late = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(b["due"] or b["date"], "%Y-%m-%d")).days
+        bucket = "current" if late <= 0 else "1-30" if late <= 30 else "31-60" if late <= 60 else "61-90" if late <= 90 else "90+"
+        a = aging.setdefault(names.get(b["vendor_id"], "?"), {"current": 0.0, "1-30": 0.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0})
+        a[bucket] = round(a[bucket] + st["owed"], 2)
+    return {"months": keys, "billed": [{"vendor": v, "months": m_, "total": round(sum(m_.values()), 2)} for v, m_ in sorted(billed.items())],
+            "received": [round(received[k], 2) for k in keys],
+            "aging": [dict(a, vendor=v, total=round(sum(a.values()), 2)) for v, a in sorted(aging.items(), key=lambda x: -sum(x[1].values()))]}
+
+
+def take_snapshot(day=None, kind="manual", by="Wojtek Stock"):
+    """The inventory's value at a moment, kept: month-ends and year-ends for your taxes, or whenever you ask."""
+    inv = report_inventory()
+    day = day or today_local_day()
+    with Tx() as c:
+        sid = c.execute("INSERT INTO snapshots(day,kind,at,by,items,units,value,no_cost) VALUES(?,?,?,?,?,?,?,?)",
+                        (day, kind, now_iso(), by, len(inv["items"]), inv["units"], inv["total"], inv["noCost"])).lastrowid
+        c.executemany("INSERT INTO snapshot_items(snapshot_id,item_id,name,sku,category,vendor,stock,cost,value) VALUES(?,?,?,?,?,?,?,?,?)",
+                      [(sid, x["id"], x["name"], x["sku"], x["category"], x["vendor"], max(0, x["stock"]), x["cost"], x["value"]) for x in inv["items"]])
+    log.info("Inventory snapshot (%s, %s): $%.2f", kind, day, inv["total"])
+    bump()
+    return sid
+
+
+def snapshot_due(now):
+    """It's the last day of the month, late: time for the month-end (or year-end) snapshot, if not taken yet."""
+    tomorrow = (now + timedelta(days=1)).date()
+    if tomorrow.day != 1 or (now.hour, now.minute) < (23, 45):
+        return None
+    day = now.strftime("%Y-%m-%d")
+    if q1("SELECT 1 FROM snapshots WHERE day=? AND kind IN ('month-end','year-end')", day):
+        return None
+    return "year-end" if now.month == 12 else "month-end"
+
+
+def reports_loop():
+    """Month-end and year-end inventory snapshots, taken by themselves just before midnight; and the sales history,
+    read once."""
+    time.sleep(30)
+    while True:
+        try:
+            if setup_confirmed() and WOO_READY and not (meta_get("sales_history", {}) or {}).get("loaded") \
+                    and not (meta_get("sales_history", {}) or {}).get("running") and not (meta_get("sales_history", {}) or {}).get("error"):
+                load_sales_history()
+            now = datetime.now(LOCAL_TZ)
+            kind = snapshot_due(now)
+            if kind and setup_confirmed():
+                take_snapshot(now.strftime("%Y-%m-%d"), kind)
+        except (ApiError, WooError) as e:
+            log.warning("Reports: %s", e)
+        except Exception as e:
+            log.warning("Reports loop: %s", e)
+        time.sleep(60)
+
+
+def export_report(kind, qs):
+    if kind == "inventory":
+        r = report_inventory()
+        rows = [["Part", "SKU", "Category", "Vendor", "In stock", "Cost each", "Cost from", "Value"]]
+        rows += [[x["name"], x["sku"], x["category"], x["vendor"], x["stock"], x["cost"] if x["cost"] is not None else "", x["costFrom"], x["value"]] for x in r["items"]]
+        rows += [[], ["Total", "", "", "", r["units"], "", "", r["total"]]]
+        return csv_bytes(rows)
+    if kind == "sales":
+        start, end = _period(qs)
+        r = report_sales(start, end)
+        rows = [[f"Sales {start} to {end}"], ["Part", "SKU", "Category", "Sold", "Orders", "Revenue", "Cost of what sold", "Profit", "In stock now"]]
+        rows += [[x["name"], x["sku"], x["category"], x["qty"], x["orders"], x["revenue"], x["cogs"] if x["cogs"] is not None else "",
+                  x["profit"] if x["profit"] is not None else "", x["stock"]] for x in r["items"]]
+        rows += [[], ["Total", "", "", r["units"], "", r["revenue"], r["cogs"], r["profit"], ""]]
+        return csv_bytes(rows)
+    if kind == "margins":
+        r = report_margins()
+        rows = [["Part", "SKU", "Category", "Price", "Cost", "Cost from", "Profit each", "Margin %", "Flag"]]
+        rows += [[x["name"], x["sku"], x["category"], x["price"] if x["price"] is not None else "", x["cost"] if x["cost"] is not None else "",
+                  x["costFrom"], x["profit"] if x["profit"] is not None else "", x["margin"] if x["margin"] is not None else "", x["flag"]] for x in r["items"]]
+        return csv_bytes(rows)
+    if kind == "snapshot":
+        s = q1("SELECT * FROM snapshots WHERE id=?", qint(qs, "id", 0))
+        if not s:
+            raise ApiError(404, "No such snapshot")
+        rows = [[f"Inventory on {s['day']} ({s['kind']}), taken {local_time(s['at'])}"],
+                ["Part", "SKU", "Category", "Vendor", "In stock", "Cost each", "Value"]]
+        rows += [[x["name"], x["sku"], x["category"], x["vendor"], x["stock"], x["cost"] if x["cost"] is not None else "", x["value"]]
+                 for x in q("SELECT * FROM snapshot_items WHERE snapshot_id=? ORDER BY value DESC", s["id"])]
+        rows += [[], ["Total", "", "", "", s["units"], "", s["value"]]]
+        return csv_bytes(rows)
+    raise ApiError(404, "No such report")
+
+
 # ---------------------------------------------------------------- reorder points: parts that need ordering, drafted automatically
 def on_order_qty(item_id):
     """Units coming: still due on sent or partly received POs, plus what's on draft POs (so a part is never drafted twice)."""
@@ -4476,6 +4824,26 @@ class Handler(BaseHTTPRequestHandler):
                 "WHERE vi.vendor_id=? AND i.scope='shop' ORDER BY i.name COLLATE NOCASE", vid)]})
         if path == "/api/order":
             return self.send(200, {"order": order_view(find_order((qs.get("code") or [""])[0]))})
+        if path.startswith("/api/report") or path in ("/api/snapshots",):
+            self.need_manage("Reports")
+            if path == "/api/report/inventory":
+                return self.send(200, report_inventory())
+            if path == "/api/report/sales":
+                return self.send(200, report_sales(*_period(qs)))
+            if path == "/api/report/margins":
+                try:
+                    th = float((qs.get("threshold") or ["20"])[0])
+                except ValueError:
+                    th = 20.0
+                return self.send(200, report_margins(th))
+            if path == "/api/report/purchasing":
+                return self.send(200, report_purchasing(qint(qs, "months", 12)))
+            if path == "/api/snapshots":
+                return self.send(200, {"snapshots": [dict(r) for r in q("SELECT * FROM snapshots ORDER BY day DESC, id DESC")]})
+            m = re.fullmatch(r"/api/report/(inventory|sales|margins|snapshot)\.csv", path)
+            if m:
+                return self.csv(f"wojtek-stock-{m.group(1)}-{datetime.now(LOCAL_TZ):%Y-%m-%d}.csv", export_report(m.group(1), qs))
+            raise ApiError(404, "No such report")
         if path in ("/api/bills", "/api/bill", "/api/bill/prefill", "/api/bill/file", "/api/payables", "/api/payments",
                     "/api/bills.csv", "/api/payments.csv"):
             self.need_manage("Vendor invoices and payments")
@@ -4573,6 +4941,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/po/action":
             by, _ = self.who_for_write()
             return self.send(200, {"po": po_action(b, by)})
+        if path in ("/api/snapshot/take", "/api/sales/load"):
+            self.need_manage("Reports")
+            if path == "/api/snapshot/take":
+                return self.send(200, {"id": take_snapshot(None, "manual", self.actor())})
+            if (meta_get("sales_history", {}) or {}).get("running"):
+                raise ApiError(409, "Sales history is already being read")
+            days = _int(b.get("days") or 400, 30, 3660, "Days")
+            who = self.actor()
+
+            def run():
+                try:
+                    load_sales_history(days, who)
+                except (ApiError, WooError) as e:
+                    log.warning("Sales history: %s", e)
+            threading.Thread(target=run, daemon=True).start()
+            return self.send(200, {"ok": True})
         if path in ("/api/bill", "/api/bill/void", "/api/payment", "/api/payment/void", "/api/credit/apply"):
             self.need_manage("Vendor invoices and payments")
             by = self.actor()
@@ -4733,7 +5117,7 @@ def main():
         log.warning("WooCommerce isn't set up yet: fill in WOO_URL, WOO_KEY and WOO_SECRET in stock.env")
     log.info("WooCommerce writes: %s. Feed prefixes: %s. Setup %s.", CFG["woo_write"],
              ", ".join(feed_prefixes()) or "none yet", "confirmed" if setup_confirmed() else "not confirmed yet")
-    for fn in (sync_loop, worker_loop, backup_loop, purchasing_loop, gunbroker_loop):
+    for fn in (sync_loop, worker_loop, backup_loop, purchasing_loop, gunbroker_loop, reports_loop):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     srv = ThreadingHTTPServer((CFG["host"], CFG["port"]), Handler)
     srv.daemon_threads = True

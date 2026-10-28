@@ -957,6 +957,73 @@ def run():
     check("payments export", code == 200 and b"1201" in raw and b"void" in raw, raw[:300])
     check("the header knows what's overdue", state()["payables"]["overdue"] == 13.5)
 
+    print("17g. Reports")
+    from datetime import date, timedelta as _td
+    code, r, _ = http("GET", f"http://127.0.0.1:{STOCK_PORT}/api/report/inventory", None, ck)
+    check("a station terminal can't see reports", code == 403, (code, r))
+    api("POST", "/api/po", {"vendor_id": orion, "lines": [{"item_id": 2112, "qty": 1, "cost": 2}, {"item_id": 2113, "qty": 1, "cost": 30}]}, op="ANA")
+    inv = api("GET", "/api/report/inventory")[1]
+    I = {x["id"]: x for x in inv["items"]}
+    s2112 = stock(2112)
+    check("inventory value: stock x cost", I[2112]["cost"] == 2 and I[2112]["costFrom"] == "vendor price" and I[2112]["value"] == round(s2112 * 2, 2), I[2112])
+    check("landed cost comes first", I[2003]["costFrom"] == "landed", I[2003])
+    check("totals add up", abs(inv["total"] - sum(x["value"] for x in inv["items"])) < 0.01 and inv["noCost"] > 0, (inv["total"], inv["noCost"]))
+    check("by category and by vendor", any(c["name"] == "Accessories" for c in inv["byCategory"]) and any(v["name"] == "Orion" for v in inv["byVendor"]))
+    today = date.today().isoformat()
+    old = (date.today() - _td(days=200)).isoformat()
+    a = mock("/mock/order", {"lines": [{"pid": 2112, "qty": 3, "price": 5}], "via": "checkout"})   # dated now (shop time decides the day)
+    mock("/mock/order", {"lines": [{"pid": 2112, "qty": 1, "price": 5}], "via": "woocommerce-pos"})
+    mock("/mock/order", {"lines": [{"pid": 2113, "qty": 2, "price": 8}], "via": "checkout", "day": old})
+    mock("/mock/order", {"lines": [{"pid": 2112, "qty": 10, "price": 5}], "status": "cancelled"})
+    last = state()["sync"].get("last_quick") or ""
+    api("POST", "/api/sync", {})
+    wait_sync("last_quick", last)
+    sr = api("GET", "/api/report/sales?days=30")[1]
+    S30 = {x["id"]: x for x in sr["items"]}
+    check("sales: units, revenue, cost, profit (cancelled order left out)", S30.get(2112, {}).get("qty") == 4 and S30[2112]["revenue"] == 20
+          and S30[2112]["cogs"] == 8 and S30[2112]["profit"] == 12, S30.get(2112))
+    ch = {c["channel"]: c for c in sr["channels"]}
+    check("profit only counts parts with a known cost", sr["profit"] == round(sr["costedRevenue"] - sr["cogs"], 2) and (sr["uncosted"] == 0 or sr["costedRevenue"] < sr["revenue"]), sr)
+    check("sales by channel: website and register", "Website" in ch and "Register" in ch and ch["Register"]["qty"] >= 1, sr["channels"])
+    check("an old sale isn't in the last 30 days", 2113 not in S30)
+    check("but is in the year", 2113 in {x["id"] for x in api("GET", "/api/report/sales?days=365")[1]["items"]})
+    check("dead stock: nothing sold in 180 days", 2113 in {x["id"] for x in sr["dead"]} and 2112 not in {x["id"] for x in sr["dead"]}, [x["id"] for x in sr["dead"]][:10])
+    check("slow movers: in stock, nothing sold in the period", 2113 in {x["id"] for x in sr["slow"]})
+    gbs = api("GET", "/api/report/sales?days=30")[1]["channels"]
+    check("GunBroker sales show as their own channel", any(c["channel"] == "GunBroker" for c in gbs), gbs)
+    mock("/mock/order_status", {"order": a["id"], "status": "cancelled"})
+    last = state()["sync"].get("last_quick") or ""
+    api("POST", "/api/sync", {})
+    wait_sync("last_quick", last)
+    check("an order cancelled later comes back out", {x["id"]: x for x in api("GET", "/api/report/sales?days=30")[1]["items"]}[2112]["qty"] == 1)
+    code, r, _ = api("GET", "/api/report/sales?from=2026-12-01&to=2026-01-01")
+    check("a backwards period is refused", code == 400)
+    mg = {x["id"]: x for x in api("GET", "/api/report/margins")[1]["items"]}
+    check("margins: a loss is flagged", mg[2113]["flag"] == "loss" and mg[2113]["margin"] < 0, mg[2113])
+    check("margins: a healthy one isn't", mg[2112]["flag"] == "" and mg[2112]["margin"] > 80, mg[2112])
+    pr = api("GET", "/api/report/purchasing?months=6")[1]
+    owed = api("GET", "/api/payables")[1]["vendors"][0]["owed"]
+    check("purchasing: what's billed by vendor and month", any(x["vendor"] == "Orion" for x in pr["billed"]) and len(pr["months"]) == 6, pr["billed"])
+    check("aging adds up to what's owed", abs(sum(x["total"] for x in pr["aging"]) - owed) < 0.01, (pr["aging"], owed))
+    inv = api("GET", "/api/report/inventory")[1]
+    code, r, _ = api("POST", "/api/snapshot/take", {})
+    snaps = api("GET", "/api/snapshots")[1]["snapshots"]
+    check("a snapshot keeps the value", code == 200 and snaps[0]["kind"] == "manual" and abs(snaps[0]["value"] - inv["total"]) < 0.01, (snaps[:1], inv["total"]))
+    code, raw, _ = api("GET", f"/api/report/snapshot.csv?id={snaps[0]['id']}")
+    check("snapshot as a spreadsheet", code == 200 and b"Total" in raw and b"ACC-012" in raw)
+    for kind in ("inventory", "sales", "margins"):
+        code, raw, _ = api("GET", f"/api/report/{kind}.csv?days=30")
+        check(f"{kind} as a spreadsheet", code == 200 and b"SKU" in raw)
+    os.environ["STOCK_DB"] = os.path.join(TMP, "unit.db")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("stock_unit", os.path.join(ROOT, "server.py"))
+    su = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(su)
+    from datetime import datetime as _dt
+    check("year-end snapshot on Dec 31 late", su.snapshot_due(_dt(2026, 12, 31, 23, 50)) == "year-end")
+    check("month-end on the last day late", su.snapshot_due(_dt(2026, 10, 31, 23, 50)) == "month-end" and su.snapshot_due(_dt(2027, 2, 28, 23, 46)) == "month-end")
+    check("not before then", su.snapshot_due(_dt(2026, 10, 30, 23, 50)) is None and su.snapshot_due(_dt(2026, 10, 31, 22, 0)) is None)
+
     print("18. Restart keeps everything")
     start_server("on")
     st = state()

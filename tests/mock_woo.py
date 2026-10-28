@@ -155,7 +155,7 @@ def note(oid, text):
     return n
 
 
-def make_order(lines, number=None, oid=None, status="processing", reduce=True):
+def make_order(lines, number=None, oid=None, status="processing", reduce=True, via="checkout", day=None):
     NEXT["order"] += 1
     oid = oid or NEXT["order"]
     items, changes = [], []
@@ -164,13 +164,15 @@ def make_order(lines, number=None, oid=None, status="processing", reduce=True):
         rec = rec_of(pid, vid)
         NEXT["line"] += 1
         items.append({"id": NEXT["line"], "product_id": pid, "variation_id": vid, "quantity": qty,
-                      "name": P[pid]["name"] + (" - " + rec["attributes"][0]["option"] if vid else ""), "sku": rec["sku"]})
+                      "name": P[pid]["name"] + (" - " + rec["attributes"][0]["option"] if vid else ""), "sku": rec["sku"],
+                      "total": f"{float(ln.get('price', rec.get('price') or 0)) * qty:.2f}"})
         if reduce and rec["manage_stock"] is True:
             old = rec["stock_quantity"]
             rec["stock_quantity"] -= qty
             changes.append(f"{items[-1]['name']} ({rec['sku'] or '#' + str(rec['id'])}) {old}&rarr;{rec['stock_quantity']}")
     t = tick()
-    o = {"id": oid, "number": str(number or oid), "status": status, "date_created_gmt": t, "date_modified_gmt": t,
+    o = {"id": oid, "number": str(number or oid), "status": status, "date_created_gmt": (day + "T15:00:00") if day else t,
+         "date_modified_gmt": t, "created_via": via, "meta_data": [],
          "billing": {"first_name": "Jamie", "last_name": "Rivera"}, "line_items": items}
     ORDERS.append(o)
     if changes:
@@ -359,6 +361,7 @@ class H(BaseHTTPRequestHandler):
                     rec["stock_quantity"] -= int(li["quantity"])
             t = tick()
             o = {"id": oid, "number": str(oid), "status": b.get("status", "pending"), "date_created_gmt": t, "date_modified_gmt": t,
+                 "created_via": "rest-api",
                  "billing": b.get("billing") or {}, "shipping": b.get("shipping") or {}, "line_items": items,
                  "meta_data": b.get("meta_data") or [], "customer_note": b.get("customer_note", ""), "set_paid": b.get("set_paid")}
             ORDERS.append(o)
@@ -433,8 +436,14 @@ class H(BaseHTTPRequestHandler):
             pid, vid = int(b["pid"]), int(b.get("vid") or 0)
             make_order([{"pid": pid, "vid": vid, "qty": int(b.get("qty", 1))}])
             return self.send(200, rec_of(pid, vid))
-        if path == "/mock/order":  # {lines:[{pid,vid,qty}], number?, id?}
-            return self.send(200, make_order(b["lines"], b.get("number"), b.get("id")))
+        if path == "/mock/order":  # {lines:[{pid,vid,qty,price?}], number?, id?, via?, day?, status?}
+            return self.send(200, make_order(b["lines"], b.get("number"), b.get("id"), b.get("status", "processing"),
+                                             via=b.get("via", "checkout"), day=b.get("day")))
+        if path == "/mock/order_status":
+            o = next(x for x in ORDERS if x["id"] == int(b["order"]))
+            o["status"] = b["status"]
+            o["date_modified_gmt"] = tick()
+            return self.send(200, o)
         if path == "/mock/refund":  # {order, lines:[{pid,vid,qty}], restock}
             o = next(x for x in ORDERS if x["id"] == int(b["order"]))
             refund(o, b["lines"], bool(b.get("restock")))

@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v14.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v15.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v14.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v15.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -281,6 +281,24 @@ record money). Wojtek Stock keeps what you owe vendors:
   new product, so the station finds it (your register may not).
 - **Link to a part I have**: the listing and your part are the same thing. The listing's UPC scans to your part at the
   station, and if a vendor has the listing's feed prefix, the listing's SKU becomes that vendor's part number for it.
+
+## Reports
+
+The **Reports** tab (the shop password only: it shows costs and money). In-shop parts only; feed products and guns
+aren't counted. Each report downloads as a spreadsheet.
+
+- **Inventory value:** stock × cost, by category and by vendor, and part by part. A part's cost is its average landed
+  cost from POs received (corrected by vendor invoices), or its vendor's last price; parts with neither are counted as
+  $0 and listed, so you can see what's missing.
+- **Sales:** for any period, by channel (website, register, GunBroker), best sellers, slow movers (in stock, none sold
+  in the period) and dead stock (no sale in 6 months). Profit only counts parts whose cost is known, and says so. Stock
+  keeps each order's lines from now on, and reads the past 13 months of orders once (**Read past orders again** to
+  redo it).
+- **Margins:** price against cost, worst first; anything selling at a loss, or under the margin you set, is flagged.
+- **Purchasing:** what each vendor billed, month by month, against what was received; and what you owe by how late it is.
+- **Snapshots:** the inventory's value is saved by itself just before midnight on the last day of each month, and on
+  December 31. That year-end figure is what your taxes need (cost of goods sold uses the inventory at the start and end
+  of the year). **Take one now** saves one any time; each downloads as a spreadsheet.
 
 ## GunBroker
 
