@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v15.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v20.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v15.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v20.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -158,6 +158,45 @@ the search box.
   link a barcode, give it a SKU. **Label** adds it to the label list.
 
 Feed products and guns aren't listed, the same as at the station. The filters are remembered on each device.
+
+## Bins and counting by location
+
+**Bins** (Products tab → Bins) are where parts live: a shelf, a drawer, a bin, each with a short code like `A-03`.
+**Print bin labels** prints their QR codes (`BIN-A-03`), on the Zebra or as a PDF, to stick on the shelves. A part can
+be in more than one bin (its main bin first, then backstock); set them on its Lookup card (**Bin → Set**: scan the bin
+label or type the code).
+
+- **Counting a bin:** in Count mode, scan the bin's label, then everything on it. At the review, the parts that belong in
+  that bin but weren't scanned are listed too: tick any that are really gone, and they're set to 0. Everything you
+  scanned is put in the bin, so counting each shelf once is also the quickest way to give parts their bins.
+- **Last counted:** every part counted is remembered with the date, even when the count matched. The Products tab shows
+  each part's bin and when it was last counted, with filters for a bin, no bin, never counted, and not counted in 90
+  days; the morning email says how many in-stock parts haven't been counted in 90 days. The Bins table shows, for each
+  bin, how long since its least recently counted part.
+- **Lookup a bin:** in Lookup mode, scan a bin's label to see what's in it and when each part was last counted.
+- **On labels:** tick **Bin** under Label design to print the part's main bin under its name.
+- **A full count** (year-end, or any time; the shop password): **Start a full count**, count every bin in Count mode
+  (a banner shows it's going), then **Finish**: every in-stock part nobody counted during it is listed, and you tick
+  the ones that really aren't there, which are set to 0. The rest keep their stock.
+
+## Kits
+
+A **kit** is a product made of other parts: a combo (a cleaning kit = rod + oil + 2 packs of patches) or a pack (a
+"case of 10" variation made of 10 single boxes). The kit is a WooCommerce product (or variation) of its own, with its
+stock tracked; managers set it up on the Products tab (**Kits → Make a kit**: scan or search the kit, then its parts;
+scanning a part twice makes it 2).
+
+- **Its stock is what its parts can make:** with 3 rods, 20 bottles of oil and 10 packs of patches, a kit of 1 + 1 + 2
+  shows 3. Stock keeps the kit's WooCommerce stock at that, and brings it back in line whenever a part's stock changes
+  (receiving, counting, sales), so the website, the register and GunBroker never sell more kits than you can make.
+- **Selling a kit takes its parts out**, once per order (website, register or GunBroker), logged as "Kit sold". A
+  cancelled order puts them back. A refund doesn't (as with everything else): what comes back physically goes through
+  Return mode, where **returning a kit restocks its parts**.
+- At the station, a kit can't be received, counted or adjusted (do those with its parts); Lookup shows what it's made
+  of and how many it can make, and each part shows which kits use it.
+- In reports a kit's cost is its parts' cost (so its margin and profit are right), and kits aren't counted in
+  inventory value (their parts already are).
+- **Stop treating it as a kit** (Edit) makes it a plain product again, with its own stock.
 
 ## Returns
 
@@ -272,6 +311,20 @@ record money). Wojtek Stock keeps what you owe vendors:
   **Payments (CSV)** download everything, for your accountant at tax time. Copies of invoices go into the nightly
   Dropbox backup too.
 
+**Returns to vendors (RMAs):** **New return** on the Purchasing tab, for one vendor:
+
+1. Add what's going back: **from stock** (a wrong part, overstock: scan or search it; it comes out of WooCommerce when
+   the return ships), or **from the damaged pile**, which lists what's already out of stock and waiting to go back
+   (customer returns logged as damaged, adjustments made as Damaged or Returned to vendor), the vendor's own parts first.
+   Each pile entry goes on one return only.
+2. Enter their **RA number**; **Download the form** (or **Email it** to the vendor) with your letterhead, the parts, and
+   the credit expected, which starts at what you last paid them.
+3. **Ship it**: the date, carrier and tracking number. The from-stock parts leave WooCommerce, logged as "Returned to
+   vendor (RMA-0001)". Returns waiting on a credit are listed in the morning email.
+4. **Record their credit** when it comes (the shop password): it goes on the vendor's account as a credit, ready to
+   apply to one of their bills, and a credit short of what was expected is flagged. **Close it** when it's settled,
+   with a note (including "no credit": the vendor refused).
+
 **From a distributor feed:** search the feed listings by name, SKU or UPC, then either
 
 - **Copy as a new product**: a new in-shop WooCommerce product with the listing's name, descriptions, images (the same
@@ -281,6 +334,21 @@ record money). Wojtek Stock keeps what you owe vendors:
   new product, so the station finds it (your register may not).
 - **Link to a part I have**: the listing and your part are the same thing. The listing's UPC scans to your part at the
   station, and if a vendor has the listing's feed prefix, the listing's SKU becomes that vendor's part number for it.
+
+## The morning email and alerts
+
+With email set up, Wojtek Stock sends a **morning email** every day at 7 (`MORNING_EMAIL_TIME`) to `SHOP_EMAIL` (or
+`MORNING_EMAIL_TO`): yesterday's in-shop sales by channel and the top sellers; parts at their reorder point and the
+automatic POs waiting; POs coming in (flagged late when they're past the vendor's usual lead time); overdue bills and
+bills due this week; what's out of stock; and anything that needs attention, or "All clear".
+
+**Alerts** come the moment something breaks, without waiting for anyone to open the page: syncing with WooCommerce
+failing for half an hour, changes to WooCommerce paused, a change that failed, a failed or missing Dropbox backup,
+GunBroker trouble. Each is emailed once (not every minute), and a "back to normal" email follows when it's fixed.
+`ALERT_EMAIL_TO` sends them somewhere else; `ALERT_EMAILS=off` stops them.
+
+**Setup → Morning email and alerts** shows where and when it goes, when it last went, what's wrong right now, and has
+**Preview** and **Send it now**.
 
 ## Reports
 
@@ -374,9 +442,18 @@ that has a UPC but no SKU.
 The **People** tab adds people, imports the Locator's People export, prints badges and the command sheet, and sets
 **Require a badge** (on by default once anyone is added).
 
+**Roles:** each person is **Staff** or **Manager** (People tab, with the shop password or as a manager). Staff scan,
+receive (including against a PO), count, adjust, take returns and print labels. Managers can also do purchasing
+(vendors, POs, reorder points, feed copies, returns to vendors), vendor invoices and payments, reports, the full count,
+settings and people. A manager gets a **PIN** (4 to 8 digits, set on the People tab): scanning their badge at a station
+asks for it, and with it that station has manager powers, with their name on everything, until they sign out or step
+away. **Not now** carries on as staff, and scanning the badge again asks again. Five wrong PINs lock that person for 15
+minutes; setting the PIN again unlocks it. PINs are stored scrambled, never as typed. The **shop password** always has
+everything: it's how the first managers are set up, and the way back in if a PIN is forgotten.
+
 **Terminals:** a station computer or tablet gets its own key instead of the shop password. Add one on the People tab
 and open its setup link once on that device (or scan the link's QR with its camera). Revoking it stops it at once.
-Terminals can scan and change stock, but can't change Setup, people or settings: those need the shop password.
+Terminals work as staff; a manager's badge and PIN open the rest on that terminal.
 
 **Kiosk:** on a Linux Mint station, `bash setup-kiosk.sh 'http://10.42.10.246:8090/terminal/KEY'` opens Wojtek Stock
 full screen at every login (its own Firefox profile, separate from a Locator kiosk on the same machine).

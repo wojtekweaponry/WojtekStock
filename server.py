@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v15"
+VERSION = "v20"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -98,6 +98,11 @@ CFG = {
     "gb_buffer": int(env("GB_BUFFER", "0") or 0), # hold this many back from GunBroker
     "gb_minutes": max(1.0, float(env("GB_MINUTES", "5") or 5)),
     "gb_create_orders": env("GB_CREATE_ORDERS", "on").lower() not in ("off", "0", "no", "false"),
+    # the morning email and alerts: to SHOP_EMAIL unless set
+    "morning_to": env("MORNING_EMAIL_TO"),
+    "morning_time": env("MORNING_EMAIL_TIME", "07:00") or "07:00",   # "off" for none
+    "alert_to": env("ALERT_EMAIL_TO"),
+    "alerts_on": env("ALERT_EMAILS", "on").lower() not in ("off", "0", "no", "false"),
 }
 if CFG["woo_write"] not in ("off", "dryrun", "on"):
     CFG["woo_write"] = "dryrun"
@@ -230,6 +235,11 @@ CREATE TABLE IF NOT EXISTS feed_links(feed_id INTEGER PRIMARY KEY, item_id INTEG
 CREATE TABLE IF NOT EXISTS alt_barcodes(gkey TEXT PRIMARY KEY, code TEXT, item_id INTEGER, source TEXT, at TEXT);
 """)
 add_col("jobs", "po_id", "INTEGER")
+# v19: roles per person
+add_col("people", "role", "TEXT DEFAULT 'staff'")
+add_col("people", "pin_hash", "TEXT")
+add_col("people", "pin_fails", "INTEGER DEFAULT 0")
+add_col("people", "pin_locked_until", "REAL DEFAULT 0")
 # v10: reorder points, automatic drafts, email
 conn.executescript("""
 CREATE TABLE IF NOT EXISTS bills(id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, kind TEXT DEFAULT 'bill',
@@ -254,6 +264,27 @@ CREATE TABLE IF NOT EXISTS snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, day T
 CREATE TABLE IF NOT EXISTS snapshot_items(snapshot_id INTEGER, item_id INTEGER, name TEXT, sku TEXT, category TEXT, vendor TEXT,
     stock INTEGER, cost REAL, value REAL);
 CREATE INDEX IF NOT EXISTS snapshot_items_snap ON snapshot_items(snapshot_id);
+CREATE TABLE IF NOT EXISTS bins(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, name TEXT, notes TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS item_bins(item_id INTEGER, bin_id INTEGER, pos INTEGER DEFAULT 0, PRIMARY KEY(item_id, bin_id));
+CREATE INDEX IF NOT EXISTS item_bins_bin ON item_bins(bin_id);
+CREATE TABLE IF NOT EXISTS item_counts(id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER, at TEXT, by TEXT, counted INTEGER,
+    expected INTEGER, bin_id INTEGER, full_id INTEGER);
+CREATE INDEX IF NOT EXISTS item_counts_item ON item_counts(item_id);
+CREATE TABLE IF NOT EXISTS full_counts(id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT, by TEXT, finished_at TEXT, finished_by TEXT,
+    status TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS rmas(id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, vendor_id INTEGER, status TEXT,
+    vendor_rma TEXT, reason TEXT, notes TEXT, created_at TEXT, by TEXT, shipped_at TEXT, ship_date TEXT, carrier TEXT, tracking TEXT,
+    credit_bill_id INTEGER, closed_at TEXT, close_note TEXT, emailed_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS rma_lines(id INTEGER PRIMARY KEY AUTOINCREMENT, rma_id INTEGER, item_id INTEGER, name TEXT, sku TEXT,
+    qty INTEGER, cost REAL, reason TEXT, remove INTEGER DEFAULT 1, source_job_id INTEGER, job_id INTEGER);
+CREATE INDEX IF NOT EXISTS rma_lines_rma ON rma_lines(rma_id);
+CREATE INDEX IF NOT EXISTS rma_lines_source ON rma_lines(source_job_id);
+CREATE TABLE IF NOT EXISTS manager_sessions(token_hash TEXT PRIMARY KEY, code TEXT, created_at TEXT, last_seen REAL, where_ TEXT);
+CREATE TABLE IF NOT EXISTS kits(item_id INTEGER PRIMARY KEY, created_at TEXT, by TEXT);
+CREATE TABLE IF NOT EXISTS kit_parts(kit_id INTEGER, part_id INTEGER, qty INTEGER, PRIMARY KEY(kit_id, part_id));
+CREATE INDEX IF NOT EXISTS kit_parts_part ON kit_parts(part_id);
+CREATE TABLE IF NOT EXISTS kit_sales(order_id INTEGER, kit_id INTEGER, taken REAL DEFAULT 0, returned REAL DEFAULT 0,
+    PRIMARY KEY(order_id, kit_id));
 CREATE TABLE IF NOT EXISTS gb_listings(gb_id INTEGER PRIMARY KEY, title TEXT, sku TEXT, qty INTEGER, fixed INTEGER,
     price REAL, item_id INTEGER, why TEXT, want INTEGER, pushed_qty INTEGER, pushed_at TEXT, error TEXT, seen_at TEXT);
 CREATE TABLE IF NOT EXISTS gb_orders(gb_order_id INTEGER PRIMARY KEY, at TEXT, buyer TEXT, total REAL, status TEXT,
@@ -932,6 +963,7 @@ def inc_sync(reason="scheduled"):
         orders = list(woo_pages("/orders", {"modified_after": since_s, "dates_are_gmt": "true", "status": "any",
                                             "_fields": ORDER_FIELDS}))
         record_sales(orders)
+        process_kit_sales(orders)
         touched, var_parents = set(), set()
         touch_rows = []
         for o in orders:
@@ -958,6 +990,7 @@ def inc_sync(reason="scheduled"):
             refresh_variations(sorted(parents), started)
             rescope()
         drifted = note_drift(before)
+        kits_refresh()
         watched = {r["order_id"] for r in q("SELECT DISTINCT order_id FROM jobs WHERE kind='return' AND restock=1 AND status='done'")}
         for oid in sorted({int(o.get("id") or 0) for o in orders} & watched):
             check_double_restock(oid)
@@ -1054,7 +1087,7 @@ def live_many(ids):
 
 
 # ---------------------------------------------------------------- the write guard
-STOCK_KINDS = ("receive", "count", "adjust", "return", "sale")
+STOCK_KINDS = ("receive", "count", "adjust", "return", "sale", "kit", "kitset")
 
 
 def guard(kind, item, parent):
@@ -1104,9 +1137,13 @@ def job_finish(job_id, status, before=None, after=None, error="", mode=None):
         conn.execute("UPDATE jobs SET status=?, before=?, after=?, error=?, mode=COALESCE(?,mode), done_at=? WHERE id=?",
                      (status, None if before is None else str(before), None if after is None else str(after),
                       error, mode, now_iso(), job_id))
-    j = q1("SELECT po_id FROM jobs WHERE id=?", job_id)
+    j = q1("SELECT po_id, kind, item_id FROM jobs WHERE id=?", job_id)
     if j and j["po_id"]:
         refresh_po_status(j["po_id"])   # a PO moves to partly received / received as its items are confirmed
+    if j and status == "done" and j["kind"] in STOCK_KINDS and j["kind"] != "kitset":
+        ks = kits_of_part(j["item_id"])
+        if ks:
+            kits_refresh(ks)   # a part's stock changed: the kits made from it follow
     bump()
 
 
@@ -1128,12 +1165,19 @@ def process_job(job):
         rescope()
         return job_finish(job["id"], "refused", error=why, mode=mode)
     kind = job["kind"]
-    if kind in ("receive", "adjust", "return", "sale"):
+    if kind in ("receive", "adjust", "return", "sale", "kit"):
         before = item["stock"]
         after = before + int(job["delta"])
-        if after < 0 and kind != "sale":   # a sale on another marketplace already happened: record it, even oversold
+        if after < 0 and kind not in ("sale", "kit"):   # a sale already happened: record it, even oversold
             return job_finish(job["id"], "refused", before, after,
                               f"Would leave stock below zero (WooCommerce has {before})", mode)
+        field, value = "stock_quantity", after
+    elif kind == "kitset":   # a kit's stock: how many can be made from its parts, worked out again now
+        before = item["stock"]
+        live_many([p["part_id"] for p in kit_parts(job["item_id"])])   # the parts' stock as it is right now
+        after = kit_available(job["item_id"])
+        if after is None or after == before:
+            return job_finish(job["id"], "done" if mode == "on" else "dryrun", before, before, "Already right", mode)
         field, value = "stock_quantity", after
     elif kind == "count":
         before = item["stock"]
@@ -1290,6 +1334,106 @@ def operator_for(code):
     return dict(p) if p else None
 
 
+
+# ---------------------------------------------------------------- roles: staff and managers (a badge plus a PIN)
+# Staff (everyone, by default) scan, receive, count, adjust, take returns and print labels. A manager who scans their
+# badge and enters their PIN gets manager powers on that station until they sign out or step away (30 idle minutes on
+# the server; the page signs out after 10): purchasing, vendor invoices and payments, reports, the full count, settings
+# and people. The shop password always has everything (it's how the first managers are set up, and the way back in).
+MGR_IDLE = 30 * 60
+PIN_TRIES, PIN_LOCK = 5, 15 * 60
+
+
+def pin_hash(pin, salt=None):
+    salt = salt or secrets.token_hex(8)
+    return f"pbkdf2${salt}${hashlib.pbkdf2_hmac('sha256', pin.encode(), salt.encode(), 120_000).hex()}"
+
+
+def pin_ok(pin, stored):
+    try:
+        _, salt, _h = stored.split("$")
+    except (AttributeError, ValueError):
+        return False
+    return hmac.compare_digest(pin_hash(pin, salt), stored)
+
+
+def set_role(code, role, by=""):
+    code = norm_code(code)
+    p = q1("SELECT * FROM people WHERE code=? AND active=1", code)
+    if not p:
+        raise ApiError(404, "No such person")
+    if role not in ("staff", "manager"):
+        raise ApiError(400, "A role is staff or manager")
+    with DB_LOCK:
+        conn.execute("UPDATE people SET role=? WHERE code=?", (role, code))
+        if role == "staff":
+            conn.execute("DELETE FROM manager_sessions WHERE code=?", (code,))   # their manager sessions end now
+    note_change("person", "role", f"{p['name']} (USR-{code})", role, by)
+    bump()
+
+
+def set_pin(code, pin, by=""):
+    code = norm_code(code)
+    p = q1("SELECT * FROM people WHERE code=? AND active=1", code)
+    if not p:
+        raise ApiError(404, "No such person")
+    pin = str(pin or "")
+    if not re.fullmatch(r"\d{4,8}", pin):
+        raise ApiError(400, "A PIN is 4 to 8 digits")
+    if len(set(pin)) == 1 or pin in "0123456789" or pin in "9876543210":
+        raise ApiError(400, "Pick a PIN that isn't all one digit or a run like 1234")
+    with DB_LOCK:
+        conn.execute("UPDATE people SET pin_hash=?, pin_fails=0, pin_locked_until=0 WHERE code=?", (pin_hash(pin), code))
+        conn.execute("DELETE FROM manager_sessions WHERE code=?", (code,))
+    note_change("person", "PIN set", f"{p['name']} (USR-{code})", by=by)
+    bump()
+
+
+def manager_login(code, pin, where=""):
+    code = norm_code(code)
+    p = q1("SELECT * FROM people WHERE code=? AND active=1", code)
+    if not p or p["role"] != "manager":
+        raise ApiError(403, "That badge isn't a manager's")
+    if not p["pin_hash"]:
+        raise ApiError(403, "No PIN set yet: set one on the People tab (with the shop password)")
+    if (p["pin_locked_until"] or 0) > time.time():
+        mins = int(((p["pin_locked_until"] or 0) - time.time()) // 60) + 1
+        raise ApiError(429, f"Too many wrong PINs: try again in {mins} minute{'s' if mins != 1 else ''}")
+    if not pin_ok(str(pin or ""), p["pin_hash"]):
+        fails = (p["pin_fails"] or 0) + 1
+        with DB_LOCK:
+            conn.execute("UPDATE people SET pin_fails=?, pin_locked_until=? WHERE code=?",
+                         (0 if fails >= PIN_TRIES else fails, time.time() + PIN_LOCK if fails >= PIN_TRIES else 0, code))
+        if fails >= PIN_TRIES:
+            log.warning("Manager PIN locked for %s after %d wrong tries", p["name"], fails)
+            raise ApiError(429, f"Too many wrong PINs: locked for {PIN_LOCK // 60} minutes")
+        raise ApiError(403, f"Wrong PIN ({PIN_TRIES - fails} tr{'ies' if PIN_TRIES - fails != 1 else 'y'} left)")
+    token = secrets.token_urlsafe(24)
+    with DB_LOCK:
+        conn.execute("UPDATE people SET pin_fails=0 WHERE code=?", (code,))
+        conn.execute("DELETE FROM manager_sessions WHERE last_seen<?", (time.time() - MGR_IDLE,))
+        conn.execute("INSERT INTO manager_sessions(token_hash,code,created_at,last_seen,where_) VALUES(?,?,?,?,?)",
+                     (token_hash(token), code, now_iso(), time.time(), where))
+    note_change("person", "manager sign-in", f"{p['name']} (USR-{code})", where, p["name"])
+    return {"token": token, "name": p["name"], "code": code}
+
+
+def manager_for(token):
+    """The active manager behind a manager token, if it's current (and refresh it)."""
+    if not token or len(token) > 100:
+        return None
+    s_ = q1("SELECT * FROM manager_sessions WHERE token_hash=?", token_hash(token))
+    if not s_ or s_["last_seen"] < time.time() - MGR_IDLE:
+        return None
+    p = q1("SELECT code, name, role FROM people WHERE code=? AND active=1", s_["code"])
+    if not p or p["role"] != "manager":
+        return None
+    if time.time() - s_["last_seen"] > 30:
+        with DB_LOCK:
+            conn.execute("UPDATE manager_sessions SET last_seen=? WHERE token_hash=?", (time.time(), s_["token_hash"]))
+    return dict(p)
+
+
 # ---------------------------------------------------------------- terminals (a station's own key, instead of the password)
 TERMINAL_COOKIE = "stock_terminal"
 _seen_at = {}
@@ -1416,6 +1560,8 @@ def commit(body, by, operator):
         seen.add(r["id"])
         if r["scope"] != "shop":
             raise ApiError(409, f"{label_name(r)} can't be changed: {r['why'] or r['scope']}")
+        if is_kit(r["id"]):
+            raise ApiError(409, f"{label_name(r)} is a kit: its stock comes from its parts (receive, count or adjust those)")
         if kind == "receive":
             specs.append({"item": r, "delta": _int(ln.get("qty"), 1, 100000, "Quantity")})
         elif kind == "adjust":
@@ -1649,7 +1795,25 @@ def commit_return(body, by, operator):
             raise ApiError(409, f"{e['name']} can't be put back in stock here: {e['why']}")
         rows.append((e, qty, restock))
     batch, at, ids = uuid.uuid4().hex[:10], now_iso(), []
+    kit_rows = [(e, qty) for e, qty, restock in rows if restock and is_kit(e["item"])]
+    rows = [(e, qty, restock) for e, qty, restock in rows if not (restock and is_kit(e["item"]))]
     with Tx() as c:
+        for e, qty in kit_rows:   # a kit coming back: its parts go back in stock, and it's recorded as returned
+            cur = c.execute("""INSERT INTO jobs(batch,at,kind,item_id,parent_id,name,sku,qty,restock,order_id,order_number,reason,note,by,
+                               operator,status,mode,done_at) VALUES(?,?,'return',?,?,?,?,?,1,?,?,?,?,?,?,'done',?,?)""",
+                            (batch, at, e["item"], e["parent"], e["name"], e["sku"], qty, oid, num, "Customer return (a kit: its parts restocked)",
+                             note, by, operator, CFG["woo_write"], at))
+            ids.append(cur.lastrowid)
+            for p in kit_parts(e["item"]):
+                if p["scope"] == "shop":
+                    cur = c.execute("""INSERT INTO jobs(batch,at,kind,item_id,parent_id,name,sku,delta,reason,note,by,operator,status,mode,order_id,order_number)
+                                       VALUES(?,?,'kit',?,?,?,?,?,?,?,?,?,'pending',?,?,?)""",
+                                    (batch, at, p["part_id"], (q1("SELECT parent_id FROM items WHERE id=?", p["part_id"]) or {"parent_id": 0})["parent_id"] or 0,
+                                     label_name(p), p["sku"], qty * p["qty"], f"Kit returned: {e['name']} (order {num})", note, by, operator,
+                                     CFG["woo_write"], oid, num))
+                    ids.append(cur.lastrowid)
+            c.execute("INSERT INTO kit_sales(order_id,kit_id,taken,returned) VALUES(?,?,0,?) ON CONFLICT(order_id,kit_id) DO UPDATE SET "
+                      "returned=returned+excluded.returned, taken=MAX(0, taken-excluded.returned)", (oid, e["item"], qty))
         for e, qty, restock in rows:
             cur = c.execute("""INSERT INTO jobs(batch,at,kind,item_id,parent_id,name,sku,delta,qty,restock,order_id,order_number,
                                reason,note,by,operator,status,mode,done_at,before,after) VALUES(?,?,'return',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -1682,7 +1846,7 @@ def process_order_note(job, mode):
             out.append(f"{what}: damaged, not restocked")
         elif r["status"] == "done":
             any_back = True
-            out.append(f"{what}: restocked ({r['before']} to {r['after']})")
+            out.append(f"{what}: restocked" + (f" ({r['before']} to {r['after']})" if r["before"] is not None else " (as its parts)"))
         elif r["status"] == "dryrun":
             out.append(f"{what}: would be restocked (dry run)")
         else:
@@ -2837,6 +3001,10 @@ def cost_table():
     for r in q("SELECT item_id, last_cost FROM vendor_items WHERE last_cost IS NOT NULL AND last_cost>0 ORDER BY updated_at"):
         if r["item_id"] not in out:
             out[r["item_id"]] = (r["last_cost"], "vendor price")
+    for k in q("SELECT item_id FROM kits"):   # a kit costs what its parts cost (if every part's cost is known)
+        parts = q("SELECT part_id, qty FROM kit_parts WHERE kit_id=?", k["item_id"])
+        if parts and all(p["part_id"] in out for p in parts):
+            out[k["item_id"]] = (round(sum(out[p["part_id"]][0] * p["qty"] for p in parts), 4), "its parts")
     return out
 
 
@@ -2868,7 +3036,10 @@ def report_inventory():
     items, cats, vends = [], {}, {}
     total = units = 0.0
     no_cost = 0
+    kit_ids = {r["item_id"] for r in q("SELECT item_id FROM kits")}
     for it in shop_items_full():
+        if it["id"] in kit_ids:
+            continue   # a kit's stock is its parts' stock: counted once, as the parts
         c, src = costs.get(it["id"], (None, ""))
         stock = max(0, it["stock"])
         value = round(stock * (c or 0), 2)
@@ -3070,6 +3241,792 @@ def export_report(kind, qs):
         rows += [[], ["Total", "", "", "", s["units"], "", s["value"]]]
         return csv_bytes(rows)
     raise ApiError(404, "No such report")
+
+
+
+# ---------------------------------------------------------------- the morning email, and alerts when something breaks
+def morning_to():
+    return CFG["morning_to"] or CFG["shop_email"] or CFG["po_cc"]
+
+
+def alert_to():
+    return CFG["alert_to"] or morning_to()
+
+
+def attention_items():
+    """What needs a person, right now: (key, one line). The same list the morning email and the alerts use."""
+    out = []
+    sy = meta_get("sync", {}) or {}
+    last_ok = parse_iso(sy.get("last_ok"))
+    if sy.get("error") and (not last_ok or (datetime.now(timezone.utc) - last_ok).total_seconds() > 1800):
+        out.append(("sync", f"Syncing with WooCommerce has been failing: {sy['error']}"))
+    p = writes_paused()
+    if p:
+        out.append(("paused", f"Changes to WooCommerce are paused: {p.get('reason', '')}"))
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+    failed = q1("SELECT COUNT(*) n FROM jobs WHERE status='failed' AND done_at>=?", since)["n"]
+    if failed:
+        out.append(("failed", f"{failed} change{'s' if failed != 1 else ''} to WooCommerce failed in the last day (Log tab)"))
+    d = dbx_conf()
+    if d.get("refresh_token"):
+        ok = parse_iso(d.get("last_ok"))
+        if d.get("last_error"):
+            out.append(("backup", f"The last Dropbox backup failed: {d['last_error']}"))
+        elif not ok or (datetime.now(timezone.utc) - ok).days >= 2:
+            out.append(("backup", "No Dropbox backup in two days"))
+    g = meta_get("gb", {}) or {}
+    if gb_ready() and g.get("error"):
+        out.append(("gunbroker", f"GunBroker sync problem: {g['error']}"))
+    n = q1("SELECT COUNT(*) n FROM gb_listings WHERE error!=''")["n"] + q1("SELECT COUNT(*) n FROM gb_orders WHERE status IN ('failed','cancelled after import')")["n"]
+    if n:
+        out.append(("gb-attention", f"GunBroker: {n} listing{'s' if n != 1 else ''} or sale{'s' if n != 1 else ''} flagged (GunBroker tab)"))
+    w = q1("SELECT COUNT(*) n FROM restock_watch")["n"]
+    if w:
+        out.append(("double-restock", f"{w} possible double restock{'s' if w != 1 else ''} (Setup tab)"))
+    return out
+
+
+def morning_report(day=None):
+    """(subject, text) of the morning email."""
+    now = datetime.now(LOCAL_TZ)
+    yday = day or (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    L = []
+    money_ = lambda x: f"${x:,.2f}"
+    sr = report_sales(yday, yday)
+    L.append(f"YESTERDAY ({datetime.strptime(yday, '%Y-%m-%d'):%a %b %-d})")
+    if sr["items"]:
+        L.append(f"  Sold {sr['units']:g} unit{'s' if sr['units'] != 1 else ''} of in-shop parts, {money_(sr['revenue'])}: " +
+                 ", ".join(f"{c['channel']} {money_(c['total'])}" for c in sr["channels"]))
+        for x in sr["items"][:5]:
+            L.append(f"    {x['qty']:g} x {x['name']} ({x['sku']})  {money_(x['revenue'])}")
+    else:
+        L.append("  No in-shop parts sold.")
+    ro = [r for r in reorder_status() if r["need"]]
+    drafts = q("SELECT p.number, v.name, v.auto_send, (SELECT COUNT(*) FROM po_lines WHERE po_id=p.id) n FROM pos p JOIN vendors v ON v.id=p.vendor_id "
+               "WHERE p.status='draft' AND p.auto=1")
+    L += ["", "NEEDS ORDERING"]
+    if ro:
+        L += [f"  {r['name']} ({r['sku']}): {r['stock']} in stock, reorder at {r['min']}" + (f", from {r['vendor']}" if r["vendor"] else ", NO VENDOR SET") for r in ro[:15]]
+        if len(ro) > 15:
+            L.append(f"  ...and {len(ro) - 15} more")
+    for dft in drafts:
+        if dft["n"]:
+            L.append(f"  Automatic draft {dft['number']} to {dft['name']}: {dft['n']} part{'s' if dft['n'] != 1 else ''}" +
+                     (f", emailed by itself at {CFG['auto_po_time']}" if dft["auto_send"] else ", waiting for you to send it"))
+    if not ro and not any(d_["n"] for d_ in drafts):
+        L.append("  Nothing: every part with a reorder point has enough coming.")
+    L += ["", "COMING IN"]
+    pos = q("SELECT p.*, v.name vendor, v.lead_days FROM pos p JOIN vendors v ON v.id=p.vendor_id WHERE p.status IN ('sent','partial') ORDER BY p.sent_at")
+    for p in pos:
+        d_ = po_out(p, full=False)
+        sent = parse_iso(p["sent_at"])
+        days = (datetime.now(timezone.utc) - sent).days if sent else 0
+        late = p["lead_days"] is not None and days > (p["lead_days"] or 0) + 2
+        ago = "today" if days == 0 else "yesterday" if days == 1 else f"{days} days ago"
+        L.append(f"  {p['number']} from {p['vendor']}: {d_['open']} unit{'s' if d_['open'] != 1 else ''} still due, sent {ago}"
+                 + (f"  LATE (usually {p['lead_days']} days)" if late else ""))
+    if not pos:
+        L.append("  No open purchase orders.")
+    pb = payables()
+    t = pb["totals"]
+    L += ["", "BILLS"]
+    if t["count"]:
+        L.append(f"  Overdue {money_(t['overdue'])} · due within a week {money_(t['soon'])} · later {money_(t['later'])}")
+        for b in q("SELECT * FROM bills WHERE void=0 AND kind='bill' ORDER BY due"):
+            st = bill_state(b)
+            if st["owed"] > 0.004 and st["flag"]:
+                v = (q1("SELECT name FROM vendors WHERE id=?", b["vendor_id"]) or {"name": "?"})["name"]
+                L.append(f"    {v} invoice {b['number']}: {money_(st['owed'])} {st['flag']} (due {b['due']})")
+    else:
+        L.append("  Nothing owed.")
+    outs = q("SELECT name, attrs, sku FROM items WHERE scope='shop' AND stock<=0 ORDER BY name COLLATE NOCASE")
+    L += ["", f"OUT OF STOCK ({len(outs)})"]
+    L += [f"  {o['name']}{' (' + o['attrs'] + ')' if o['attrs'] else ''} ({o['sku']})" for o in outs[:20]] or ["  None."]
+    if len(outs) > 20:
+        L.append(f"  ...and {len(outs) - 20} more (Products tab: Out of stock)")
+    waiting = q("SELECT * FROM rmas WHERE status='shipped' ORDER BY shipped_at")
+    if waiting:
+        L += ["", "RETURNS TO VENDORS, WAITING ON A CREDIT"]
+        for r_ in waiting:
+            d_ = rma_out(r_, full=False)
+            sent = parse_iso(r_["shipped_at"])
+            L.append(f"  {r_['number']} to {d_['vendor']}: ${d_['expected']:,.2f} expected, shipped {(datetime.now(timezone.utc) - sent).days if sent else 0} days ago")
+    od = len(overdue_counts(90))
+    if od:
+        L += ["", f"COUNTING: {od} in-stock part{'s' if od != 1 else ''} not counted in 90 days (Products tab: Not counted in 90 days)"]
+    att = attention_items()
+    drift = q1("SELECT COUNT(*) n FROM drift WHERE at>=?", (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds"))["n"]
+    if drift:
+        att.append(("drift", f"Stock changed outside sales on {drift} part{'s' if drift != 1 else ''} yesterday (Setup tab)"))
+    L += ["", "NEEDS ATTENTION"] + ([f"  ! {t_}" for _, t_ in att] or ["  All clear."])
+    L += ["", f"Wojtek Stock {VERSION}"]
+    subject = f"Wojtek Stock: {now:%a %b %-d}" + (f", {len(att)} thing{'s' if len(att) != 1 else ''} need{'' if len(att) != 1 else 's'} attention" if att else "")
+    return subject, "\n".join(L)
+
+
+def send_morning(by="Wojtek Stock"):
+    to = morning_to()
+    if not to:
+        raise ApiError(400, "No address for the morning email: set MORNING_EMAIL_TO (or SHOP_EMAIL) in stock.env")
+    subject, text = morning_report()
+    send_email(to, subject, text)
+    meta_set("morning_last", {"at": now_iso(), "to": to, "by": by})
+    log.info("Morning email sent to %s", to)
+    bump()
+    return {"to": to, "subject": subject}
+
+
+def check_alerts():
+    """Email when something breaks (once, not every minute), and again when it's back to normal."""
+    if not CFG["alerts_on"] or not email_ready() or not alert_to():
+        return
+    now = {k: t for k, t in attention_items() if k not in ("double-restock", "gb-attention")}   # those wait for the morning
+    active = meta_get("alerts_active", {}) or {}
+    new = {k: t for k, t in now.items() if k not in active}
+    cleared = [k for k in active if k not in now]
+    try:
+        if new:
+            send_email(alert_to(), f"Wojtek Stock needs attention: {list(new.values())[0][:80]}",
+                       "\n\n".join(new.values()) + f"\n\nOpen Wojtek Stock to look: the banner at the top says more.\n\nWojtek Stock {VERSION}")
+        if cleared:
+            send_email(alert_to(), "Wojtek Stock: back to normal",
+                       "These are fine again:\n\n" + "\n".join(f"- {active[k]}" for k in cleared) + f"\n\nWojtek Stock {VERSION}")
+    except ApiError as e:
+        log.warning("Couldn't send an alert email: %s", e.msg)
+        return
+    if new or cleared:
+        meta_set("alerts_active", {k: now[k] for k in now})
+        log.info("Alerts: %d new, %d cleared", len(new), len(cleared))
+
+
+def notify_loop():
+    every = max(1, int(env("NOTIFY_CHECK_SECONDS", "60") or 60))
+    time.sleep(min(20, every * 5))
+    while True:
+        try:
+            if setup_confirmed():
+                check_alerts()
+                mt = CFG["morning_time"]
+                now = datetime.now(LOCAL_TZ)
+                if mt != "off" and email_ready() and morning_to():
+                    h, _, m = mt.partition(":")
+                    if (now.hour, now.minute) >= (int(h or 7), int(m or 0)) and meta_get("morning_day") != now.strftime("%Y-%m-%d"):
+                        meta_set("morning_day", now.strftime("%Y-%m-%d"))
+                        send_morning()
+        except Exception as e:
+            log.warning("Notifications: %s", e)
+        time.sleep(every)
+
+
+
+# ---------------------------------------------------------------- bins (where parts live) and counting by location
+def bin_code(v):
+    """A bin's code, as typed or scanned: A-03, a03 or BIN-A-03 all mean A-03."""
+    c = skey(v)
+    if c.startswith("BIN-"):
+        c = c[4:]
+    c = re.sub(r"\s+", "-", c)
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9._/-]{0,19}", c):
+        raise ApiError(400, "A bin code is letters and digits (and - _ . /), up to 20, such as A-03")
+    return c
+
+
+def last_counts():
+    return {r["item_id"]: r["at"] for r in q("SELECT item_id, MAX(at) at FROM item_counts GROUP BY item_id")}
+
+
+def item_bin_codes():
+    out = {}
+    for r in q("SELECT ib.item_id, b.code FROM item_bins ib JOIN bins b ON b.id=ib.bin_id ORDER BY ib.item_id, ib.pos, b.code"):
+        out.setdefault(r["item_id"], []).append(r["code"])
+    return out
+
+
+def list_bins():
+    lc = last_counts()
+    out = []
+    for b in q("SELECT * FROM bins ORDER BY code"):
+        items = q("SELECT i.id, i.stock FROM item_bins ib JOIN items i ON i.id=ib.item_id WHERE ib.bin_id=? AND i.scope IN ('shop','readonly')", b["id"])
+        counts = [lc.get(i["id"]) for i in items]
+        out.append(dict(b, parts=len(items), units=sum(max(0, i["stock"] or 0) for i in items),
+                        oldest=None if not items else (min(c for c in counts if c) if all(counts) else "never")))
+    return out
+
+
+def save_bin(b, by=""):
+    code = bin_code(b.get("code"))
+    name, notes = _text(b.get("name"), 80), _text(b.get("notes"), 300)
+    bid = b.get("id")
+    other = q1("SELECT id FROM bins WHERE code=? AND id!=?", code, int(bid or 0))
+    if other:
+        raise ApiError(409, f"There's already a bin {code}")
+    with DB_LOCK:
+        if bid:
+            conn.execute("UPDATE bins SET code=?, name=?, notes=? WHERE id=?", (code, name, notes, int(bid)))
+        else:
+            bid = conn.execute("INSERT INTO bins(code,name,notes,created_at) VALUES(?,?,?,?)", (code, name, notes, now_iso())).lastrowid
+    note_change("bin", "saved", code, name, by)
+    bump(items=True)
+    return dict(q1("SELECT * FROM bins WHERE id=?", int(bid)))
+
+
+def remove_bin(bid, by=""):
+    b = q1("SELECT * FROM bins WHERE id=?", bid)
+    if not b:
+        raise ApiError(404, "No such bin")
+    n = q1("SELECT COUNT(*) n FROM item_bins WHERE bin_id=?", bid)["n"]
+    with DB_LOCK:
+        conn.execute("DELETE FROM item_bins WHERE bin_id=?", (bid,))
+        conn.execute("DELETE FROM bins WHERE id=?", (bid,))
+    note_change("bin", "removed", b["code"], f"{n} part(s) unassigned", by)
+    bump(items=True)
+
+
+def get_bin(code):
+    b = q1("SELECT * FROM bins WHERE code=?", bin_code(code))
+    if not b:
+        raise ApiError(404, f"No bin {bin_code(code)}: add it on the Products tab (Bins)")
+    lc = last_counts()
+    items = [dict(item_out(r), lastCount=lc.get(r["id"]), main=r["pos"] == 0) for r in
+             q("SELECT i.*, ib.pos FROM item_bins ib JOIN items i ON i.id=ib.item_id WHERE ib.bin_id=? AND i.scope IN ('shop','readonly') "
+               "ORDER BY i.name COLLATE NOCASE, i.attrs", b["id"])]
+    return dict(b, items=items)
+
+
+def set_item_bins(item_id, codes, by=""):
+    r = _item(item_id)
+    if r["scope"] not in ("shop", "readonly"):
+        raise ApiError(409, f"{label_name(r)} isn't an in-shop part")
+    ids = []
+    for c in codes or []:
+        b = q1("SELECT * FROM bins WHERE code=?", bin_code(c))
+        if not b:
+            raise ApiError(404, f"No bin {bin_code(c)}: add it first")
+        if b["id"] not in ids:
+            ids.append(b["id"])
+    with Tx() as c_:
+        c_.execute("DELETE FROM item_bins WHERE item_id=?", (r["id"],))
+        c_.executemany("INSERT INTO item_bins(item_id,bin_id,pos) VALUES(?,?,?)", [(r["id"], b_, i) for i, b_ in enumerate(ids)])
+    note_change("bin", "assigned", label_name(r), ", ".join(codes or []) or "(none)", by)
+    bump(items=True)
+    return item_bin_codes().get(r["id"], [])
+
+
+def add_to_bin(item_id, bin_id):
+    """Put a part in a bin if it isn't already (its main bin if it has none)."""
+    if q1("SELECT 1 FROM item_bins WHERE item_id=? AND bin_id=?", item_id, bin_id):
+        return False
+    n = q1("SELECT COUNT(*) n FROM item_bins WHERE item_id=?", item_id)["n"]
+    with DB_LOCK:
+        conn.execute("INSERT INTO item_bins(item_id,bin_id,pos) VALUES(?,?,?)", (item_id, bin_id, n))
+    return True
+
+
+def active_full_count():
+    return q1("SELECT * FROM full_counts WHERE status='open' ORDER BY id DESC LIMIT 1")
+
+
+def count_done(b, by, operator):
+    """A count finished: every part counted is recorded as counted (even if it matched); the ticked differences go to
+    WooCommerce (only if stock hasn't moved since the review); counted parts can be put in the bin being counted."""
+    check_can_write()
+    lines = b.get("lines") or []
+    if not isinstance(lines, list) or not lines or len(lines) > 1000:
+        raise ApiError(400, "Nothing counted")
+    bin_row = None
+    if b.get("bin_id"):
+        bin_row = q1("SELECT * FROM bins WHERE id=?", _int(b.get("bin_id"), 1, 10 ** 9, "Bin"))
+        if not bin_row:
+            raise ApiError(404, "No such bin")
+    fc = active_full_count()
+    specs, recs, seen = [], [], set()
+    for ln in lines:
+        r = _item(ln.get("id"))
+        if r["id"] in seen:
+            raise ApiError(400, f"{label_name(r)} is on the count twice")
+        seen.add(r["id"])
+        counted = _int(ln.get("counted"), 0, 1000000, "Counted")
+        expected = _int(ln.get("expected"), -1000000, 1000000, "Expected stock") if ln.get("expected") is not None else None
+        recs.append((r["id"], now_iso(), by, counted, expected, bin_row["id"] if bin_row else None, fc["id"] if fc else None))
+        if ln.get("apply"):
+            if r["scope"] != "shop":
+                raise ApiError(409, f"{label_name(r)} can't be changed: {r['why'] or r['scope']}")
+            if expected is None:
+                raise ApiError(400, "A change needs the stock seen at the review")
+            if counted != expected:
+                specs.append({"item": r, "target": counted, "expected": expected})
+    with DB_LOCK:
+        conn.executemany("INSERT INTO item_counts(item_id,at,by,counted,expected,bin_id,full_id) VALUES(?,?,?,?,?,?,?)", recs)
+    assigned = 0
+    if bin_row and b.get("assign", True):
+        for rid, *_ in recs:
+            if b.get("assign_ids") is None or rid in (b.get("assign_ids") or []):
+                assigned += add_to_bin(rid, bin_row["id"])
+    res = queue_jobs("count", specs, by, operator, "Count" + (f" (bin {bin_row['code']})" if bin_row else ""), "") if specs else {"batch": None, "jobs": []}
+    bump(items=True)
+    return dict(res, recorded=len(recs), assigned=assigned)
+
+
+def overdue_counts(days=90):
+    lc = last_counts()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat(timespec="seconds")
+    bins = item_bin_codes()
+    out = [dict(item_out(r), lastCount=lc.get(r["id"]), bins=bins.get(r["id"], []))
+           for r in q("SELECT * FROM items WHERE scope='shop' AND COALESCE(stock,0)!=0 ORDER BY name COLLATE NOCASE, attrs")
+           if (lc.get(r["id"]) or "") < cutoff]
+    return out
+
+
+def full_count_status():
+    fc = active_full_count()
+    last = q1("SELECT * FROM full_counts WHERE status='finished' ORDER BY id DESC LIMIT 1")
+    out = {"active": dict(fc) if fc else None, "last": dict(last) if last else None}
+    if fc:
+        counted = {r["item_id"] for r in q("SELECT DISTINCT item_id FROM item_counts WHERE full_id=?", fc["id"])}
+        shop = q("SELECT * FROM items WHERE scope='shop'")
+        bins = item_bin_codes()
+        missing = [dict(item_out(r), bins=bins.get(r["id"], [])) for r in shop if r["id"] not in counted and (r["stock"] or 0) != 0]
+        out.update(counted=len(counted), total=len(shop), missing=sorted(missing, key=lambda x: (x["bins"][:1] or ["~"], x["name"])))
+    return out
+
+
+def full_count_start(by=""):
+    if active_full_count():
+        raise ApiError(409, "A full count is already going")
+    with DB_LOCK:
+        conn.execute("INSERT INTO full_counts(started_at,by,status) VALUES(?,?,'open')", (now_iso(), by))
+    note_change("count", "full count started", "", by=by)
+    bump()
+    return full_count_status()
+
+
+def full_count_finish(b, by, operator):
+    """End the full count: parts in stock that nobody counted can be set to 0 (ticked ones only)."""
+    fc = active_full_count()
+    if not fc:
+        raise ApiError(409, "No full count is going")
+    zero = [int(x) for x in (b.get("zero_ids") or []) if str(x).isdigit()]
+    res = {"batch": None}
+    if zero:
+        check_can_write()
+        specs = []
+        for i in zero:
+            r = _item(i)
+            if r["scope"] == "shop" and (r["stock"] or 0) != 0:
+                specs.append({"item": r, "target": 0, "expected": r["stock"]})
+        if specs:
+            res = queue_jobs("count", specs, by, operator, "Full count: not found", "Set to 0 at the end of the full count")
+            with DB_LOCK:
+                conn.executemany("INSERT INTO item_counts(item_id,at,by,counted,expected,bin_id,full_id) VALUES(?,?,?,?,?,?,?)",
+                                 [(sp["item"]["id"], now_iso(), by, 0, sp["expected"], None, fc["id"]) for sp in specs])
+    with DB_LOCK:
+        conn.execute("UPDATE full_counts SET status='finished', finished_at=?, finished_by=? WHERE id=?", (now_iso(), by, fc["id"]))
+    note_change("count", "full count finished", "", f"{len(zero)} part(s) set to 0", by)
+    bump(items=True)
+    return dict(res, zeroed=len(zero))
+
+
+
+# ---------------------------------------------------------------- returns to vendors (RMAs)
+# Parts going back to a vendor: from stock (taken out of WooCommerce when the return ships) or from the damaged pile
+# (customer returns logged as damaged, adjustments made as Damaged or Returned to vendor: already out of stock). It ships
+# with the vendor's RA number, a credit is expected at what you paid, and the vendor's credit, when it comes, becomes a
+# credit on their account (vendor invoices) to apply to a bill.
+RMA_DONE = ("closed", "cancelled")
+
+
+def rma_cost(vendor_id, item_id):
+    vi = q1("SELECT last_cost FROM vendor_items WHERE vendor_id=? AND item_id=?", vendor_id, item_id)
+    if vi and vi["last_cost"]:
+        return vi["last_cost"]
+    c = cost_table().get(item_id)
+    return c[0] if c else 0.0
+
+
+def damaged_pile(vendor_id=None):
+    """Parts already out of stock and waiting to go back: customer returns logged as damaged, adjustments made as
+    Damaged or Returned to vendor, not on a return yet. With a vendor: theirs first (by who supplies the part)."""
+    used = {r["source_job_id"] for r in q("SELECT rl.source_job_id FROM rma_lines rl JOIN rmas r ON r.id=rl.rma_id "
+                                         "WHERE rl.source_job_id IS NOT NULL AND r.status!='cancelled'")}
+    vend = item_vendor_names()
+    vid_names = {v["id"]: v["name"] for v in q("SELECT id, name FROM vendors")}
+    out = []
+    for j in q("SELECT * FROM jobs WHERE ((kind='return' AND restock=0 AND status='logged') OR "
+               "(kind='adjust' AND delta<0 AND status IN ('done','dryrun') AND reason IN ('Damaged','Returned to vendor'))) "
+               "AND at>=? ORDER BY id DESC", (datetime.now(timezone.utc) - timedelta(days=365)).isoformat(timespec="seconds")):
+        if j["id"] in used:
+            continue
+        it = q1("SELECT scope FROM items WHERE id=?", j["item_id"])
+        if not it or it["scope"] not in ("shop", "readonly"):
+            continue   # feed products and guns don't go back through here
+        qty = j["qty"] if j["kind"] == "return" else -int(j["delta"] or 0)
+        out.append({"job_id": j["id"], "item_id": j["item_id"], "name": j["name"], "sku": j["sku"], "qty": qty, "at": j["at"],
+                    "reason": "Customer return, damaged" + (f" (order {j['order_number']})" if j["order_number"] else "") if j["kind"] == "return"
+                    else j["reason"] + (f": {j['note']}" if j["note"] else ""), "vendor": vend.get(j["item_id"], "")})
+    if vendor_id:
+        name = vid_names.get(vendor_id, "")
+        out.sort(key=lambda x: (x["vendor"] != name, x["at"]))
+    return out
+
+
+def rma_out(r, full=True):
+    d = dict(r)
+    v = q1("SELECT * FROM vendors WHERE id=?", r["vendor_id"])
+    d["vendor"] = v["name"] if v else "(removed vendor)"
+    lines = [dict(x) for x in q("SELECT * FROM rma_lines WHERE rma_id=? ORDER BY id", r["id"])]
+    d["expected"] = round(sum((x["qty"] or 0) * (x["cost"] or 0) for x in lines), 2)
+    d["units"] = sum(x["qty"] or 0 for x in lines)
+    cr = q1("SELECT * FROM bills WHERE id=?", r["credit_bill_id"]) if r["credit_bill_id"] else None
+    d["credit"] = {"id": cr["id"], "number": cr["number"], "total": cr["total"], "date": cr["date"]} if cr else None
+    d["short"] = round(d["expected"] - cr["total"], 2) if cr and cr["total"] + 0.004 < d["expected"] else 0
+    if full:
+        for x in lines:
+            x["jobStatus"] = (q1("SELECT status, error FROM jobs WHERE id=?", x["job_id"]) or {"status": None})["status"] if x["job_id"] else None
+            it = q1("SELECT stock FROM items WHERE id=?", x["item_id"])
+            x["stock"] = it["stock"] if it else None
+        d["lines"] = lines
+        d["vendorInfo"] = dict(v) if v else None
+    return d
+
+
+def list_rmas(status=""):
+    where = "status NOT IN ('closed','cancelled')" if status == "open" else "status=?" if status else "1=1"
+    return [rma_out(r, full=False) for r in q(f"SELECT * FROM rmas WHERE {where} ORDER BY id DESC LIMIT 500", *([status] if status and status != "open" else []))]
+
+
+def save_rma(b, by=""):
+    vid = _int(b.get("vendor_id"), 1, 10 ** 9, "Vendor")
+    if not q1("SELECT 1 FROM vendors WHERE id=?", vid):
+        raise ApiError(400, "Pick a vendor")
+    rid = b.get("id")
+    raw = b.get("lines") or []
+    if not isinstance(raw, list) or len(raw) > 300:
+        raise ApiError(400, "Up to 300 lines")
+    lines = []
+    for ln in raw:
+        r = _item(ln.get("item_id"))
+        if r["scope"] not in ("shop", "readonly"):
+            raise ApiError(409, f"{label_name(r)} isn't an in-shop part")
+        qty = _int(ln.get("qty"), 1, 100000, "Quantity")
+        src = int(ln["source_job_id"]) if str(ln.get("source_job_id") or "").isdigit() else None
+        remove = 0 if src else (1 if ln.get("remove", True) else 0)
+        if remove and r["scope"] != "shop":
+            raise ApiError(409, f"{label_name(r)}'s stock isn't tracked: untick \"take out of stock\" for it")
+        lines.append((r, qty, _money(ln.get("cost") if ln.get("cost") not in (None, "") else rma_cost(vid, r["id"]), "Credit each"),
+                      _text(ln.get("reason"), 120), remove, src))
+    now = now_iso()
+    with Tx() as c:
+        if rid:
+            old = c.execute("SELECT * FROM rmas WHERE id=?", (int(rid),)).fetchone()
+            if not old:
+                raise ApiError(404, "No such return")
+            if old["status"] != "open":
+                raise ApiError(409, f"{old['number']} has shipped: its parts can't change")
+            c.execute("UPDATE rmas SET vendor_id=?, vendor_rma=?, reason=?, notes=?, updated_at=? WHERE id=?",
+                      (vid, _text(b.get("vendor_rma"), 60), _text(b.get("reason"), 200), _text(b.get("notes"), 1000), now, old["id"]))
+            c.execute("DELETE FROM rma_lines WHERE rma_id=?", (old["id"],))
+            rid = old["id"]
+        else:
+            n = int(meta_get("rma_next", 1) or 1)
+            meta_set("rma_next", n + 1)
+            rid = c.execute("INSERT INTO rmas(number,vendor_id,status,vendor_rma,reason,notes,created_at,by,updated_at) VALUES(?,?,'open',?,?,?,?,?,?)",
+                            (f"RMA-{n:04d}", vid, _text(b.get("vendor_rma"), 60), _text(b.get("reason"), 200), _text(b.get("notes"), 1000),
+                             now, by, now)).lastrowid
+        for r, qty, cost, reason, remove, src in lines:
+            c.execute("INSERT INTO rma_lines(rma_id,item_id,name,sku,qty,cost,reason,remove,source_job_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                      (rid, r["id"], label_name(r), r["sku"], qty, cost, reason, remove, src))
+    bump()
+    return rma_out(q1("SELECT * FROM rmas WHERE id=?", rid))
+
+
+def ship_rma(b, by, operator):
+    r = q1("SELECT * FROM rmas WHERE id=?", _int(b.get("id"), 1, 10 ** 9, "Return"))
+    if not r:
+        raise ApiError(404, "No such return")
+    if r["status"] != "open":
+        raise ApiError(409, f"{r['number']} has already shipped")
+    lines = q("SELECT * FROM rma_lines WHERE rma_id=?", r["id"])
+    if not lines:
+        raise ApiError(400, "Add the parts going back first")
+    take = [l for l in lines if l["remove"]]
+    if take:
+        check_can_write()
+    specs = []
+    for l in take:
+        it = _item(l["item_id"])
+        if it["scope"] != "shop":
+            raise ApiError(409, f"{label_name(it)} can't be changed: {it['why']}")
+        specs.append({"item": it, "delta": -int(l["qty"])})
+    res = queue_jobs("adjust", specs, by, operator, f"Returned to vendor ({r['number']})", r["vendor_rma"] and f"Vendor RA {r['vendor_rma']}" or "") if specs else {"jobs": []}
+    with DB_LOCK:
+        for l, jid in zip(take, res["jobs"]):
+            conn.execute("UPDATE rma_lines SET job_id=? WHERE id=?", (jid, l["id"]))
+        conn.execute("UPDATE rmas SET status='shipped', shipped_at=?, ship_date=?, carrier=?, tracking=?, updated_at=? WHERE id=?",
+                     (now_iso(), _day(b.get("date") or today_local_day(), "Ship date"), _text(b.get("carrier"), 40), _text(b.get("tracking"), 80),
+                      now_iso(), r["id"]))
+    note_change("rma", "shipped", r["number"], f"{len(lines)} line(s)", by)
+    bump()
+    return dict(rma_out(q1("SELECT * FROM rmas WHERE id=?", r["id"])), batch=res.get("batch"))
+
+
+def credit_rma(b, by=""):
+    """The vendor's credit for a return: a credit on their account (vendor invoices) to apply to a bill."""
+    r = q1("SELECT * FROM rmas WHERE id=?", _int(b.get("id"), 1, 10 ** 9, "Return"))
+    if not r:
+        raise ApiError(404, "No such return")
+    if r["status"] != "shipped":
+        raise ApiError(409, "A credit is recorded once the return has shipped" if r["status"] == "open" else f"{r['number']} is {r['status']}")
+    amount = _money(b.get("amount"), "Credit amount")
+    if amount <= 0:
+        raise ApiError(400, "The credit should be more than 0 (to close a return with no credit, use Close)")
+    cr = save_bill({"vendor_id": r["vendor_id"], "kind": "credit", "number": _text(b.get("number"), 60) or f"Credit for {r['number']}",
+                    "date": b.get("date") or today_local_day(),
+                    "lines": [{"description": f"Credit for {r['number']}" + (f" (vendor RA {r['vendor_rma']})" if r["vendor_rma"] else ""),
+                               "qty": 1, "price": amount}], "notes": f"From return {r['number']}"}, by)
+    with DB_LOCK:
+        conn.execute("UPDATE rmas SET status='credited', credit_bill_id=?, updated_at=? WHERE id=?", (cr["id"], now_iso(), r["id"]))
+    note_change("rma", "credited", r["number"], f"${amount:,.2f}", by)
+    bump()
+    return rma_out(q1("SELECT * FROM rmas WHERE id=?", r["id"]))
+
+
+def close_rma(b, by=""):
+    r = q1("SELECT * FROM rmas WHERE id=?", _int(b.get("id"), 1, 10 ** 9, "Return"))
+    if not r:
+        raise ApiError(404, "No such return")
+    act = b.get("action")
+    if act == "cancel":
+        if r["status"] != "open":
+            raise ApiError(409, "Only a return that hasn't shipped can be cancelled")
+        status = "cancelled"
+    elif act == "close":
+        if r["status"] not in ("shipped", "credited"):
+            raise ApiError(409, "Ship it first (or cancel it)")
+        status = "closed"
+    else:
+        raise ApiError(400, "Unknown action")
+    with DB_LOCK:
+        conn.execute("UPDATE rmas SET status=?, closed_at=?, close_note=?, updated_at=? WHERE id=?",
+                     (status, now_iso(), _text(b.get("note"), 300), now_iso(), r["id"]))
+    note_change("rma", status, r["number"], _text(b.get("note"), 300), by)
+    bump()
+    return rma_out(q1("SELECT * FROM rmas WHERE id=?", r["id"]))
+
+
+def rma_pdf(r):
+    """The return form: letterhead, vendor, their RA number, the parts going back, and the credit expected."""
+    W, H, M = 215.9, 279.4, 16
+    pg = PdfPage(W, H)
+    y = M
+    pg.text(M, y + 6, CFG["shop_name"], 16, "B")
+    yy = y + 12
+    addr = [x.strip() for x in CFG["shop_address"].split("|") if x.strip()]
+    for t in addr + [" · ".join(x for x in (CFG["shop_phone"], CFG["shop_email"]) if x)]:
+        if t:
+            pg.text(M, yy, t, 9, "R")
+            yy += 4.4
+    pg.text(W - M - 34, y + 6, "RETURN TO VENDOR", 13, "B", "right")
+    pg.text(W - M - 34, y + 13, r["number"], 12, "B", "right")
+    if r["vendor_rma"]:
+        pg.text(W - M - 34, y + 19, f"Your RA # {r['vendor_rma']}", 10, "B", "right")
+    pg.qr(r["number"], W - M - 30, y - 1, 30)
+    y = max(yy, y + 31) + 4
+    pg.rect(M, y, W - 2 * M, 0.25)
+    y += 6
+    v = r.get("vendorInfo") or {}
+    pg.text(M, y, "TO", 8, "B")
+    y += 5
+    for i, t in enumerate(x for x in (v.get("name"), v.get("contact"), v.get("email"), v.get("phone"),
+                                      ("Account # " + v["account"]) if v.get("account") else "") if x):
+        pg.text(M, y, t, 10, "B" if i == 0 else "R")
+        y += 4.8
+    if r["reason"]:
+        y += 2
+        for t in wrap_mm("Reason: " + r["reason"], "R", 10, W - 2 * M):
+            pg.text(M, y, t, 10, "R")
+            y += 4.8
+    y += 5
+    cols = [(M, "Our SKU"), (M + 34, "Part"), (W - M - 60, "Qty"), (W - M - 28, "Credit each"), (W - M, "Total")]
+    for i, (x, t) in enumerate(cols):
+        pg.text(x, y, t, 8, "B", "right" if i >= 2 else "left")
+    y += 2
+    pg.rect(M, y, W - 2 * M, 0.25)
+    y += 5
+    for l in r["lines"]:
+        desc = wrap_mm(l["name"] + (f" ({l['reason']})" if l["reason"] else ""), "R", 9, 90)
+        pg.text(M, y, fit_mm(l["sku"] or "", "M", 8.5, 32), 8.5, "M")
+        for i, dl in enumerate(desc):
+            pg.text(M + 34, y + i * 4.2, dl, 9, "R")
+        pg.text(W - M - 60, y, str(l["qty"]), 9.5, "B", "right")
+        pg.text(W - M - 28, y, f"${l['cost'] or 0:,.2f}", 9, "R", "right")
+        pg.text(W - M, y, f"${(l['cost'] or 0) * l['qty']:,.2f}", 9, "R", "right")
+        y += len(desc) * 4.2 + 2
+        pg.rect(M, y - 1.2, W - 2 * M, 0.25)
+        y += 3.5
+    pg.text(W - M - 28, y + 2, "Credit expected", 10, "B", "right")
+    pg.text(W - M, y + 2, f"${r['expected']:,.2f}", 11, "B", "right")
+    if r["notes"]:
+        y += 12
+        for t in wrap_mm(r["notes"], "R", 9.5, W - 2 * M):
+            pg.text(M, y, t, 9.5, "R")
+            y += 4.6
+    pg.text(M, H - 14, f"Please put {r['number']}" + (f" and RA # {r['vendor_rma']}" if r["vendor_rma"] else "") + " on the credit.", 9, "R")
+    return build_pdf([pg])
+
+
+def email_rma(rid, by=""):
+    r = q1("SELECT * FROM rmas WHERE id=?", rid)
+    if not r:
+        raise ApiError(404, "No such return")
+    v = q1("SELECT * FROM vendors WHERE id=?", r["vendor_id"])
+    if not v or not v["email"]:
+        raise ApiError(400, "The vendor has no email address")
+    d = rma_out(r)
+    lines = [f"{l['qty']} x {l['name']} ({l['sku']})" + (f": {l['reason']}" if l["reason"] else "") for l in d["lines"]]
+    text = "\n".join([f"Hello{(' ' + v['contact'].split()[0]) if v['contact'] else ''},", "",
+                      f"We're returning these parts ({d['number']}" + (f", your RA # {d['vendor_rma']}" if d["vendor_rma"] else "") + "):", ""] + lines +
+                     ["", f"Credit expected: ${d['expected']:,.2f}"] + ([f"", f"Reason: {d['reason']}"] if d["reason"] else []) +
+                     ["", "The return form is attached." + ("" if d["vendor_rma"] else " Please send an RA number if you need one."), "", "Thank you,", CFG["shop_name"]])
+    send_email(v["email"], f"Return {d['number']} from {CFG['shop_name']}", text, [(f"{d['number']}.pdf", rma_pdf(d))], CFG["po_cc"] or None)
+    with DB_LOCK:
+        conn.execute("UPDATE rmas SET emailed_at=? WHERE id=?", (now_iso(), rid))
+    note_change("rma", "emailed", d["number"], v["email"], by)
+    bump()
+    return rma_out(q1("SELECT * FROM rmas WHERE id=?", rid))
+
+
+
+# ---------------------------------------------------------------- kits: combos and packs made from other parts
+# A kit is a WooCommerce product (a combo: rod + oil + patches; or a pack: a "case of 10" made of 10 boxes) whose
+# stock is how many can be made from its parts. Selling one (an order that's processing, on hold, completed, or later
+# refunded) takes its parts out once per order; a cancelled order puts them back; a return in Return mode restocks the
+# parts. Kits aren't received, counted or adjusted themselves: their parts are.
+KIT_SOLD = ("processing", "on-hold", "completed", "refunded")
+
+
+def is_kit(item_id):
+    return bool(q1("SELECT 1 FROM kits WHERE item_id=?", item_id))
+
+
+def kit_parts(kit_id):
+    return [dict(r) for r in q("SELECT kp.part_id, kp.qty, i.name, i.attrs, i.sku, i.stock, i.scope FROM kit_parts kp "
+                               "LEFT JOIN items i ON i.id=kp.part_id WHERE kp.kit_id=? ORDER BY kp.rowid", kit_id)]
+
+
+def kit_available(kit_id):
+    parts = kit_parts(kit_id)
+    if not parts:
+        return None
+    return max(0, min(((p["stock"] or 0) // p["qty"]) if p["qty"] else 0 for p in parts))
+
+
+def list_kits():
+    out = []
+    for k in q("SELECT k.*, i.name, i.attrs, i.sku, i.stock FROM kits k JOIN items i ON i.id=k.item_id ORDER BY i.name COLLATE NOCASE"):
+        out.append(dict(k, label=label_name(k), parts=kit_parts(k["item_id"]), available=kit_available(k["item_id"])))
+    return out
+
+
+def save_kit(b, by=""):
+    k = _item(b.get("item_id"))
+    if k["scope"] != "shop":
+        raise ApiError(409, f"{label_name(k)} can't be a kit: {k['why'] or 'its stock must be tracked in WooCommerce'}")
+    raw = b.get("parts") or []
+    if not isinstance(raw, list) or not raw or len(raw) > 50:
+        raise ApiError(400, "A kit needs 1 to 50 parts")
+    parts, seen = [], set()
+    for x in raw:
+        p = _item(x.get("part_id"))
+        if p["id"] == k["id"]:
+            raise ApiError(400, "A kit can't contain itself")
+        if p["scope"] != "shop":
+            raise ApiError(409, f"{label_name(p)} can't be a part: {p['why'] or p['scope']}")
+        if is_kit(p["id"]):
+            raise ApiError(409, f"{label_name(p)} is a kit itself: list its parts instead")
+        if p["id"] in seen:
+            raise ApiError(400, f"{label_name(p)} is listed twice")
+        seen.add(p["id"])
+        parts.append((p["id"], _int(x.get("qty"), 1, 10000, "Quantity")))
+    if q1("SELECT 1 FROM kit_parts WHERE part_id=?", k["id"]):
+        raise ApiError(409, f"{label_name(k)} is a part in another kit, so it can't be a kit too")
+    new = not is_kit(k["id"])
+    with Tx() as c:
+        if new:
+            c.execute("INSERT INTO kits(item_id,created_at,by) VALUES(?,?,?)", (k["id"], now_iso(), by))
+        c.execute("DELETE FROM kit_parts WHERE kit_id=?", (k["id"],))
+        c.executemany("INSERT INTO kit_parts(kit_id,part_id,qty) VALUES(?,?,?)", [(k["id"], p, n) for p, n in parts])
+    note_change("kit", "saved", label_name(k), ", ".join(f"{n} x {p}" for p, n in parts), by)
+    kits_refresh([k["id"]], by)
+    bump(items=True)
+    return [x for x in list_kits() if x["item_id"] == k["id"]][0]
+
+
+def remove_kit(item_id, by=""):
+    k = q1("SELECT * FROM kits WHERE item_id=?", item_id)
+    if not k:
+        raise ApiError(404, "That isn't a kit")
+    with DB_LOCK:
+        conn.execute("DELETE FROM kit_parts WHERE kit_id=?", (item_id,))
+        conn.execute("DELETE FROM kits WHERE item_id=?", (item_id,))
+    note_change("kit", "removed", label_name(_item(item_id)), "its stock is its own again", by)
+    bump(items=True)
+
+
+def kits_refresh(kit_ids=None, by="Wojtek Stock (kits)"):
+    """Bring kits' WooCommerce stock to what their parts can make (only where it differs, and not twice at once)."""
+    if not setup_confirmed():
+        return 0
+    ids = kit_ids if kit_ids is not None else [r["item_id"] for r in q("SELECT item_id FROM kits")]
+    specs = []
+    for kid in ids:
+        it = q1("SELECT * FROM items WHERE id=?", kid)
+        av = kit_available(kid)
+        if not it or it["scope"] != "shop" or av is None or av == it["stock"]:
+            continue
+        if q1("SELECT 1 FROM jobs WHERE kind='kitset' AND item_id=? AND status IN ('pending','working')", kid):
+            continue
+        specs.append({"item": it})
+    if specs:
+        queue_jobs("kitset", specs, by, "", "Kit: set to what its parts can make")
+    return len(specs)
+
+
+def kits_of_part(part_id):
+    return [r["kit_id"] for r in q("SELECT kit_id FROM kit_parts WHERE part_id=?", part_id)]
+
+
+def process_kit_sales(orders):
+    """Kits on these orders: take their parts out once per order (or put them back if the order was cancelled)."""
+    kits = {r["item_id"]: r["created_at"] for r in q("SELECT * FROM kits")}
+    if not kits:
+        return 0
+    n = 0
+    for o in orders:
+        oid = int(o.get("id") or 0)
+        sold = {}
+        for li in o.get("line_items") or []:
+            iid = int(li.get("variation_id") or 0) or int(li.get("product_id") or 0)
+            if iid in kits:
+                sold[iid] = sold.get(iid, 0) + float(li.get("quantity") or 0)
+        made = o.get("date_created_gmt") or ""
+        for kid, qty in sold.items():
+            if made and made + "+00:00" < kits[kid] and not q1("SELECT 1 FROM kit_sales WHERE order_id=? AND kit_id=?", oid, kid):
+                continue   # sold before it was a kit: its parts were never part of it
+            ks = q1("SELECT * FROM kit_sales WHERE order_id=? AND kit_id=?", oid, kid) or {"taken": 0, "returned": 0}
+            target = max(0.0, (qty if o.get("status") in KIT_SOLD else 0) - (ks["returned"] or 0))
+            diff = target - (ks["taken"] or 0)
+            if abs(diff) < 1e-9:
+                continue
+            kit = q1("SELECT * FROM items WHERE id=?", kid)
+            specs = [{"item": _item(p["part_id"]), "delta": int(round(-diff * p["qty"]))} for p in kit_parts(kid) if p["scope"] == "shop"]
+            if specs:
+                queue_jobs("kit", specs, "Wojtek Stock (kits)", "",
+                           (f"Kit sold: {label_name(kit)}" if diff > 0 else f"Kit order cancelled: {label_name(kit)}") + f" (order {o.get('number') or oid})")
+            with DB_LOCK:
+                conn.execute("INSERT INTO kit_sales(order_id,kit_id,taken,returned) VALUES(?,?,?,?) "
+                             "ON CONFLICT(order_id,kit_id) DO UPDATE SET taken=excluded.taken", (oid, kid, target, ks["returned"] or 0))
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------- reorder points: parts that need ordering, drafted automatically
@@ -3880,6 +4837,11 @@ def item_out(r, history=False):
                                          "ORDER BY id DESC LIMIT 15", r["id"])]
         d["labels"] = q1("SELECT COUNT(*) n, MAX(at) last FROM labels WHERE item_id=?", r["id"])["n"]
         d["costs"] = item_costs(r["id"])
+        d["bins"] = item_bin_codes().get(r["id"], [])
+        d["kit"] = {"parts": kit_parts(r["id"]), "available": kit_available(r["id"])} if is_kit(r["id"]) else None
+        d["inKits"] = [dict(x) for x in q("SELECT k.item_id, i.name, i.attrs, kp.qty FROM kit_parts kp JOIN kits k ON k.item_id=kp.kit_id "
+                                         "JOIN items i ON i.id=k.item_id WHERE kp.part_id=?", r["id"])]
+        d["counts"] = [dict(x) for x in q("SELECT at, by, counted, expected FROM item_counts WHERE item_id=? ORDER BY id DESC LIMIT 5", r["id"])]
         ro = q1("SELECT * FROM reorder WHERE item_id=?", r["id"])
         if ro:
             vid = reorder_vendor(r["id"], ro["vendor_id"])
@@ -3900,12 +4862,14 @@ def station_items():
     alts = {}
     for a in q("SELECT code, item_id FROM alt_barcodes"):
         alts.setdefault(a["item_id"], []).append(a["code"])
+    binmap, lc = item_bin_codes(), last_counts()
+    kitset = {r["item_id"] for r in q("SELECT item_id FROM kits")}
     out = []
     for r in rows:
         cats = json.loads((pcats.get(r["parent_id"]) if r["parent_id"] else r["cats"]) or "[]")
         out.append([r["id"], r["parent_id"] or 0, r["name"], r["attrs"] or "", r["sku"] or "", r["gtin"] or "", r["stock"],
                     r["scope"], r["why"] or "", lab.get(r["id"], 0), [names[c] for c in cats if c in names], r["price"] or "",
-                    alts.get(r["id"], [])])
+                    alts.get(r["id"], []), binmap.get(r["id"], []), lc.get(r["id"]), r["id"] in kitset])
     return out
 
 
@@ -4086,8 +5050,10 @@ def zebra_preview(qs):
                                  "gtin": "090255000001"}
     if not r["sku"]:
         raise ApiError(400, "That product has no SKU")
-    item = {"sku": r["sku"], "name": r["name"], "attrs": r["attrs"] or "", "gtin": r["gtin"] or ""}
-    return zpl_svg(zpl_label(item, w_in, l_in, (qs.get("name") or ["1"])[0] != "0", (qs.get("upc") or ["0"])[0] == "1", sideways))
+    item = {"sku": r["sku"], "name": r["name"], "attrs": r["attrs"] or "", "gtin": r["gtin"] or "",
+            "bin": (item_bin_codes().get(iid) or ["A-03"] if not iid else item_bin_codes().get(iid) or [""])[0]}
+    return zpl_svg(zpl_label(item, w_in, l_in, (qs.get("name") or ["1"])[0] != "0", (qs.get("upc") or ["0"])[0] == "1", sideways,
+                             (qs.get("bin") or ["0"])[0] == "1"))
 
 
 def print_test_label(body, by=""):
@@ -4165,7 +5131,7 @@ def _zwrap(text, h, wf, width):
     return lines
 
 
-def zpl_label(r, w_in=None, l_in=None, show_name=True, show_upc=False, sideways=False):
+def zpl_label(r, w_in=None, l_in=None, show_name=True, show_upc=False, sideways=False, show_bin=False):
     """A product label: a QR code of the SKU, the SKU in large letters, then the whole name, the variation and, if
     asked, the UPC, sized to fit (the name shrinks and wraps before the SKU does; it's only cut, ending in ..., if
     it can't fit even small). w_in x l_in is the label as it reads. Upright labels have the QR on top; wide ones have
@@ -4196,6 +5162,8 @@ def zpl_label(r, w_in=None, l_in=None, show_name=True, show_upc=False, sideways=
                 blk.append((_zwrap(r["attrs"], int(h * 0.92), 0.85, width), int(h * 0.92)))
         if show_upc and r["gtin"]:
             blk.append(([f"UPC {r['gtin']}"], int(h * 0.92)))
+        if show_bin and r.get("bin"):
+            blk.append(([f"Bin {r['bin']}"], int(h * 0.92)))
         blk = [(ls, hh) for ls, hh in blk if ls]
         return blk, sum(len(ls) * int(hh * 1.18) for ls, hh in blk)
 
@@ -4301,12 +5269,37 @@ def print_labels(body, by=""):
         jobs.append((r, copies))
     if total > 1000:
         raise ApiError(400, "Up to 1,000 labels at a time")
-    show_name, show_upc = body.get("name", True) is not False, bool(body.get("upc"))
+    show_name, show_upc, show_bin = body.get("name", True) is not False, bool(body.get("upc")), bool(body.get("bin"))
     sideways = bool(size.get("sideways"))
-    zpl = "".join(zpl_label(r, w_in, l_in, show_name, show_upc, sideways) * c for r, c in jobs)
+    bins = item_bin_codes()
+    zpl = "".join(zpl_label({"sku": r["sku"], "name": r["name"], "attrs": r["attrs"] or "", "gtin": r["gtin"] or "",
+                             "bin": (bins.get(r["id"]) or [""])[0]}, w_in, l_in, show_name, show_upc, sideways, show_bin) * c
+                  for r, c in jobs)
     send_to_printer(zpl)
     record_labels([(r["id"], c) for r, c in jobs], by, "zebra")
     return {"printed": total}
+
+
+def print_bin_labels(body, by=""):
+    """Bin labels on the Zebra: a QR code of BIN-code (scan it at the station), the code large, the bin's name."""
+    codes = body.get("codes") or []
+    if not isinstance(codes, list) or not codes or len(codes) > 300:
+        raise ApiError(400, "Pick 1 to 300 bins")
+    size = body.get("size") or {}
+    try:
+        w_in, l_in = float(size.get("w") or CFG["label_w_in"]), float(size.get("h") or CFG["label_l_in"])
+    except (TypeError, ValueError, AttributeError):
+        raise ApiError(400, "The label size should be in inches")
+    sideways = bool(size.get("sideways"))
+    zpl = []
+    for c in codes:
+        b = q1("SELECT * FROM bins WHERE code=?", bin_code(c))
+        if not b:
+            raise ApiError(404, f"No bin {bin_code(c)}")
+        zpl.append(zpl_label({"sku": "BIN-" + b["code"], "name": b["name"] or f"Bin {b['code']}", "attrs": "", "gtin": ""}, w_in, l_in, True, False, sideways))
+    send_to_printer("".join(zpl))
+    note_change("label", "bins printed", f"{len(codes)} bin label(s)", by=by)
+    return {"printed": len(codes)}
 
 
 def record_labels(pairs, by, via):
@@ -4635,14 +5628,23 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def manager(self):
+        """The manager signed in with their PIN on this station, if any."""
+        if not hasattr(self, "_mgr"):
+            self._mgr = manager_for(self.headers.get("X-Stock-Manager", ""))
+        return self._mgr
+
     def can_manage(self):
-        return self.auth in ("open", "password")
+        return self.auth in ("open", "password") or bool(self.manager())
 
     def need_manage(self, what="That"):
         if not self.can_manage():
-            raise ApiError(403, f"{what} needs the shop password (not a station terminal)")
+            raise ApiError(403, f"{what} is for managers: scan a manager's badge and enter the PIN (or use the shop password)")
 
     def operator(self):
+        m = self.manager()
+        if m:   # a manager's own session: their name on everything, whatever the badge header says
+            return {"code": m["code"], "name": m["name"]}
         return operator_for(self.headers.get("X-Stock-Operator", ""))
 
     def actor(self, op=None):
@@ -4822,8 +5824,39 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"rows": [dict(r) for r in q(
                 "SELECT vi.*, i.name, i.attrs, i.sku, i.stock, i.scope FROM vendor_items vi JOIN items i ON i.id=vi.item_id "
                 "WHERE vi.vendor_id=? AND i.scope='shop' ORDER BY i.name COLLATE NOCASE", vid)]})
+        if path == "/api/bins":
+            return self.send(200, {"bins": list_bins()})
+        if path == "/api/kits":
+            return self.send(200, {"kits": list_kits()})
+        if path == "/api/bin":
+            return self.send(200, {"bin": get_bin((qs.get("code") or [""])[0])})
+        if path == "/api/counts/overdue":
+            return self.send(200, {"rows": overdue_counts(qint(qs, "days", 90, 1, 3650))})
+        if path == "/api/fullcount":
+            return self.send(200, full_count_status())
+        if path == "/api/rmas":
+            return self.send(200, {"rmas": list_rmas((qs.get("status") or [""])[0])})
+        if path == "/api/rma":
+            r = q1("SELECT * FROM rmas WHERE id=?", qint(qs, "id", 0))
+            if not r:
+                raise ApiError(404, "No such return")
+            return self.send(200, {"rma": rma_out(r)})
+        if path == "/api/rma/pdf":
+            r = q1("SELECT * FROM rmas WHERE id=?", qint(qs, "id", 0))
+            if not r:
+                raise ApiError(404, "No such return")
+            d = rma_out(r)
+            return self.send(200, rma_pdf(d), "application/pdf", {"Content-Disposition": f'attachment; filename="{d["number"]}.pdf"'})
+        if path == "/api/rma/damaged":
+            return self.send(200, {"rows": damaged_pile(qint(qs, "vendor", 0) or None)})
         if path == "/api/order":
             return self.send(200, {"order": order_view(find_order((qs.get("code") or [""])[0]))})
+        if path == "/api/morning/preview":
+            self.need_manage("The morning email")
+            subject, text = morning_report()
+            return self.send(200, {"subject": subject, "text": text, "to": morning_to(), "time": CFG["morning_time"],
+                                   "last": meta_get("morning_last"), "alerts": meta_get("alerts_active", {}) or {},
+                                   "alertTo": alert_to(), "alertsOn": CFG["alerts_on"]})
         if path.startswith("/api/report") or path in ("/api/snapshots",):
             self.need_manage("Reports")
             if path == "/api/report/inventory":
@@ -4890,7 +5923,7 @@ class Handler(BaseHTTPRequestHandler):
             "progress": prog_public(),
             "syncMinutes": CFG["sync_minutes"],
             "paused": writes_paused(), "pending": jobs_pending(),
-            "people": [dict(r) for r in q("SELECT code, name FROM people WHERE active=1 ORDER BY name COLLATE NOCASE")],
+            "people": [dict(r, hasPin=bool(r["pin_hash"]), pin_hash=None) for r in q("SELECT code, name, role, pin_hash FROM people WHERE active=1 ORDER BY name COLLATE NOCASE")],
             "requireBadge": bool(meta_get("require_badge", True)),
             "reasons": {"down": CFG["down_reasons"], "up": CFG["up_reasons"]},
             "label": {"printer": bool(printer_addr()), "w": CFG["label_w_in"], "h": CFG["label_l_in"], "dpi": CFG["label_dpi"]},
@@ -4905,8 +5938,10 @@ class Handler(BaseHTTPRequestHandler):
                                 q1("SELECT COUNT(*) n FROM gb_orders WHERE status IN ('failed','cancelled after import')")["n"]},
             "autoDrafts": q1("SELECT COUNT(*) n FROM pos WHERE status='draft' AND auto=1 AND EXISTS(SELECT 1 FROM po_lines WHERE po_id=pos.id)")["n"],
             "backup": dbx_public(),
-            "access": {"terminal": self.terminal["name"] if self.terminal else "", "canManage": self.can_manage()},
+            "access": {"terminal": self.terminal["name"] if self.terminal else "", "canManage": self.can_manage(),
+                       "manager": (self.manager() or {}).get("name", ""), "password": self.auth in ("open", "password")},
             "watchCount": q1("SELECT COUNT(*) n FROM restock_watch")["n"],
+            "fullCount": (lambda f: {"since": f["started_at"], "by": f["by"]} if f else None)(active_full_count()),
             "driftCount": q1("SELECT COUNT(*) n FROM drift WHERE at>=?",
                              (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"))["n"],
         }
@@ -4929,18 +5964,25 @@ class Handler(BaseHTTPRequestHandler):
             by, op = self.who_for_write()
             return self.send(200, generate_skus(b, by, op))
         if path == "/api/vendors":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             return self.send(200, save_vendor(b, by))
         if path == "/api/vendors/remove":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             remove_vendor(_int(b.get("id"), 1, 10 ** 9, "Vendor"), by)
             return self.send(200, {"ok": True})
         if path == "/api/po":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             return self.send(200, {"po": save_po(b, by)})
         if path == "/api/po/action":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             return self.send(200, {"po": po_action(b, by)})
+        if path == "/api/morning/send":
+            self.need_manage("Sending the morning email")
+            return self.send(200, send_morning(self.actor()))
         if path in ("/api/snapshot/take", "/api/sales/load"):
             self.need_manage("Reports")
             if path == "/api/snapshot/take":
@@ -4971,14 +6013,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
             return self.send(200, {"bill": apply_credit(b, by)})
         if path == "/api/po/email":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             return self.send(200, {"po": email_po(_int(b.get("id"), 1, 10 ** 9, "PO"), by)})
         if path == "/api/gb/sync":
+            self.need_manage("A GunBroker sync")
             return self.send(200, gb_sync("by hand"))
         if path == "/api/reorder/set":
+            self.need_manage("Purchasing")
             by, _ = self.who_for_write()
             return self.send(200, set_reorder(b.get("rows"), by))
         if path == "/api/reorder/run":
+            self.need_manage("Purchasing")
             check_can_write()
             return self.send(200, reorder_run(f"{self.actor()} (reorder points)"))
         if path == "/api/reorder/suggest":
@@ -4995,11 +6041,56 @@ class Handler(BaseHTTPRequestHandler):
             by, op = self.who_for_write()
             return self.send(200, receive_po(b, by, op))
         if path == "/api/feed/copy":
+            self.need_manage("Purchasing")
             by, op = self.who_for_write()
             return self.send(200, copy_feed(b, by, op))
         if path == "/api/feed/link":
+            self.need_manage("Purchasing")
             by, op = self.who_for_write()
             return self.send(200, link_feed(b, by, op))
+        if path == "/api/bins":
+            by, _ = self.who_for_write()
+            return self.send(200, {"bin": save_bin(b, by)})
+        if path == "/api/kits":
+            self.need_manage("Setting up kits")
+            return self.send(200, {"kit": save_kit(b, self.actor())})
+        if path == "/api/kits/remove":
+            self.need_manage("Setting up kits")
+            remove_kit(_int(b.get("item_id"), 1, 10 ** 12, "Kit"), self.actor())
+            return self.send(200, {"ok": True})
+        if path == "/api/bins/remove":
+            self.need_manage("Removing a bin")
+            remove_bin(_int(b.get("id"), 1, 10 ** 9, "Bin"), self.actor())
+            return self.send(200, {"ok": True})
+        if path == "/api/item/bins":
+            by, _ = self.who_for_write()
+            codes = b.get("bins") or []
+            if not isinstance(codes, list) or len(codes) > 10:
+                raise ApiError(400, "Up to 10 bins")
+            return self.send(200, {"bins": set_item_bins(_int(b.get("item_id"), 1, 10 ** 12, "Item"), codes, by)})
+        if path == "/api/count/done":
+            by, op = self.who_for_write()
+            return self.send(200, count_done(b, by, op))
+        if path == "/api/fullcount/start":
+            self.need_manage("Starting a full count")
+            return self.send(200, full_count_start(self.actor()))
+        if path == "/api/fullcount/finish":
+            self.need_manage("Finishing a full count")
+            by, op = self.who_for_write()
+            return self.send(200, full_count_finish(b, by, op))
+        if path in ("/api/rma", "/api/rma/ship", "/api/rma/close", "/api/rma/email"):
+            self.need_manage("Returns to vendors")
+            by, op = self.who_for_write()
+            if path == "/api/rma":
+                return self.send(200, {"rma": save_rma(b, by)})
+            if path == "/api/rma/ship":
+                return self.send(200, {"rma": ship_rma(b, by, op)})
+            if path == "/api/rma/email":
+                return self.send(200, {"rma": email_rma(_int(b.get("id"), 1, 10 ** 9, "Return"), by)})
+            return self.send(200, {"rma": close_rma(b, by)})
+        if path == "/api/rma/credit":
+            self.need_manage("Recording a vendor's credit")
+            return self.send(200, {"rma": credit_rma(b, self.actor())})
         if path == "/api/return":
             by, op = self.who_for_write()
             return self.send(200, commit_return(b, by, op))
@@ -5016,6 +6107,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"items": live_many(ids)})
         if path == "/api/labels/print":
             return self.send(200, print_labels(b, self.actor()))
+        if path == "/api/labels/bins":
+            return self.send(200, print_bin_labels(b, self.actor()))
         if path == "/api/labels/test":
             return self.send(200, print_test_label(b, self.actor()))
         if path == "/api/labels/record":
@@ -5053,6 +6146,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/woo/test":
             self.need_manage("Testing the connection")
             return self.send(200, woo_test())
+        if path == "/api/manager/login":
+            return self.send(200, manager_login(b.get("code"), b.get("pin"), self.terminal["name"] if self.terminal else "shop password"))
+        if path == "/api/manager/logout":
+            tok = self.headers.get("X-Stock-Manager", "")
+            if tok:
+                with DB_LOCK:
+                    conn.execute("DELETE FROM manager_sessions WHERE token_hash=?", (token_hash(tok),))
+            return self.send(200, {"ok": True})
+        if path == "/api/people/role":
+            self.need_manage("Changing roles")
+            set_role(b.get("code"), b.get("role"), self.actor())
+            return self.send(200, {"ok": True})
+        if path == "/api/people/pin":
+            self.need_manage("Setting PINs")
+            set_pin(b.get("code"), b.get("pin"), self.actor())
+            return self.send(200, {"ok": True})
         if path == "/api/people":
             self.need_manage("Adding people")
             return self.send(200, add_person(b.get("name"), b.get("code"), self.actor()))
@@ -5117,7 +6226,7 @@ def main():
         log.warning("WooCommerce isn't set up yet: fill in WOO_URL, WOO_KEY and WOO_SECRET in stock.env")
     log.info("WooCommerce writes: %s. Feed prefixes: %s. Setup %s.", CFG["woo_write"],
              ", ".join(feed_prefixes()) or "none yet", "confirmed" if setup_confirmed() else "not confirmed yet")
-    for fn in (sync_loop, worker_loop, backup_loop, purchasing_loop, gunbroker_loop, reports_loop):
+    for fn in (sync_loop, worker_loop, backup_loop, purchasing_loop, gunbroker_loop, reports_loop, notify_loop):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     srv = ThreadingHTTPServer((CFG["host"], CFG["port"]), Handler)
     srv.daemon_threads = True

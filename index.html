@@ -159,7 +159,8 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
 #copied{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1f6f3f;color:#fff;padding:8px 16px;border-radius:8px;
   font-weight:600;z-index:9999;pointer-events:none;opacity:0;transition:opacity .2s;text-shadow:none}
 #copied.on{opacity:1}
-#poTable tbody tr,#vTable tbody tr,#billTable tbody tr{cursor:pointer}
+#poTable tbody tr,#vTable tbody tr,#billTable tbody tr,#rmaTable tbody tr{cursor:pointer}
+#rmaTable tbody tr:hover td{background:var(--hover)}
 #billTable tbody tr:hover td{background:var(--hover)}
 .issue{color:var(--dup);font-size:.84rem}
 .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 12px}
@@ -243,6 +244,8 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
         <select id="prodCat" aria-label="Category"></select>
         <select id="prodStock" aria-label="Stock"><option value="">Any stock</option><option value="in">In stock</option><option value="low">5 or fewer</option><option value="out">Out of stock (0)</option><option value="neg">Below zero</option></select>
         <select id="prodBar" aria-label="Barcode and SKU"><option value="">Any UPC and SKU</option><option value="noupc">No UPC</option><option value="nosku">No SKU</option></select>
+        <select id="prodBin" aria-label="Bin"><option value="">Any bin</option></select>
+        <select id="prodCounted" aria-label="Counted"><option value="">Counted any time</option><option value="90">Not counted in 90 days</option><option value="never">Never counted</option></select>
         <select id="prodShow" aria-label="Show"><option value="all">In-shop and read-only</option><option value="shop">Only ones Stock can change</option><option value="readonly">Only read-only</option></select>
         <label class="small">Sort <select id="prodSort">
           <option value="name:1">Name, A to Z</option><option value="name:-1">Name, Z to A</option>
@@ -254,8 +257,22 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
       <div class="small muted" id="prodSummary" style="margin-top:8px"></div>
     </div>
     <div class="panel">
-      <div class="tablewrap"><table id="prodTable"><thead><tr><th>Product</th><th>SKU</th><th>UPC</th><th>Category</th><th class="num">Stock</th><th class="num">Price</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="tablewrap"><table id="prodTable"><thead><tr><th>Product</th><th>SKU</th><th>UPC</th><th>Bin</th><th>Category</th><th class="num">Stock</th><th>Counted</th><th class="num">Price</th><th></th></tr></thead><tbody></tbody></table></div>
       <div class="row" style="margin-top:10px"><button class="btn sm" id="prodMore" hidden>Show more</button><span class="grow"></span><a class="btn sm" href="/api/items.csv" download>Download all (CSV)</a></div>
+    </div>
+    <div class="panel">
+      <div class="row"><h2 class="grow" style="margin:0">Bins</h2><button class="btn sm" id="binNew">Add a bin</button><button class="btn sm" id="binLabels">Print bin labels</button></div>
+      <p class="muted small" style="margin:6px 0 0">Where parts live. Print a bin's label and stick it on the shelf: scanning it in Count mode counts that bin (and puts what you scan in it); in Lookup it shows what's there.</p>
+      <div class="tablewrap" style="margin-top:10px"><table id="binTable"><thead><tr><th>Bin</th><th>Name</th><th class="num">Parts</th><th class="num">Units</th><th>Counted since</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="kitPanel">
+      <div class="row"><h2 class="grow" style="margin:0">Kits</h2><button class="btn sm" id="kitNew" hidden>Make a kit</button></div>
+      <p class="muted small" style="margin:6px 0 0">A kit is a product made of other parts: a combo (rod + oil + patches) or a pack (a case of 10 boxes). Its stock is how many its parts can make, kept up to date in WooCommerce; selling one takes its parts out, and returning one puts them back.</p>
+      <div class="tablewrap" style="margin-top:10px"><table id="kitTable"><thead><tr><th>Kit</th><th>Made of</th><th class="num">Can make</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="fullPanel" hidden>
+      <h2>Full count (year-end)</h2>
+      <div id="fullBody"></div>
     </div>
   </section>
 
@@ -290,6 +307,12 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
         <div class="tablewrap" style="margin-top:10px"><table id="billTable"><thead><tr><th>Vendor</th><th>Invoice #</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Owed</th><th>Match</th><th>POs</th></tr></thead><tbody></tbody></table></div>
       </div>
       <div class="panel">
+        <div class="row"><h2 class="grow" style="margin:0">Returns to vendors</h2>
+          <select id="rmaStatus" aria-label="Which returns"><option value="open">Open</option><option value="">All</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option></select>
+          <button class="btn sm primary" id="rmaNew">New return</button></div>
+        <div class="tablewrap" style="margin-top:10px"><table id="rmaTable"><thead><tr><th>Return</th><th>Vendor</th><th>Their RA #</th><th>Status</th><th class="num">Units</th><th class="num">Credit expected</th><th>Shipped</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel">
         <div class="row"><h2 class="grow" style="margin:0">Vendors</h2><button class="btn" id="vNew">Add vendor</button></div>
         <div class="tablewrap" style="margin-top:10px"><table id="vTable"><thead><tr><th>Vendor</th><th>Account</th><th>Email</th><th>Phone</th><th>Feed prefix</th><th class="num">Parts</th><th class="num">Open POs</th></tr></thead><tbody></tbody></table></div>
       </div>
@@ -302,6 +325,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
     </div>
     <div id="poPanel" hidden></div>
     <div id="billPanel" hidden></div>
+    <div id="rmaPanel" hidden></div>
   </section>
 
   <section id="tab-gunbroker" hidden>
@@ -369,6 +393,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
           <div class="row" style="margin-top:10px;gap:18px">
             <label class="inline"><input type="checkbox" id="labName" checked> Name and variation</label>
             <label class="inline"><input type="checkbox" id="labUpc"> UPC</label>
+            <label class="inline"><input type="checkbox" id="labBin"> Bin</label>
           </div>
           <p class="muted small">The QR code holds the SKU. The SKU prints as large as the label allows, on two lines when that makes it bigger. The preview shows the first product on the list.</p>
           <p class="muted small">"Read wide" uses the same 2 × 3 in labels as upright: they still feed through the Zebra 2 in across, and the label is printed sideways, like the Locator's gun tags.</p>
@@ -406,7 +431,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
     <div class="panel">
       <h2>People and badges</h2>
       <p class="muted small" style="margin-top:0">Each person scans their badge (<span class="mono">USR-</span> and their code) before scanning products, so every change is logged under their name. The Wojtek Locator's badges work here too: import its People export once. To sign out, scan <span class="mono">CMD-LOGOUT</span> or wait 10 idle minutes.</p>
-      <div class="tablewrap"><table id="peopleTable"><thead><tr><th>Name</th><th>Badge</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="tablewrap"><table id="peopleTable"><thead><tr><th>Name</th><th>Badge</th><th>Role</th><th></th></tr></thead><tbody></tbody></table></div>
       <div class="row" style="margin-top:12px">
         <input id="pName" type="text" placeholder="Name">
         <input id="pCode" type="text" placeholder="Badge code (optional)" class="mono">
@@ -482,6 +507,11 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
       <h2>Email (purchase orders)</h2>
       <div id="emailBody"></div>
     </div>
+    <div class="panel" id="morningPanel" hidden>
+      <div class="row"><h2 class="grow" style="margin:0">Morning email and alerts</h2>
+        <button class="btn sm" id="mnPreview">Preview</button><button class="btn sm" id="mnSend">Send it now</button></div>
+      <div id="morningBody" style="margin-top:8px"></div>
+    </div>
     <div class="panel">
       <h2>Dropbox backups</h2>
       <div id="dbxBody"></div>
@@ -507,6 +537,7 @@ const store = {
 async function api(path, body, method){
   const opt = {method: method || (body !== undefined ? "POST" : "GET"), headers: {"X-Requested-With": "stock"}, credentials: "same-origin"};
   if (S.op) opt.headers["X-Stock-Operator"] = S.op.code;
+  if (S.mgr) opt.headers["X-Stock-Manager"] = S.mgr.token;
   if (body !== undefined){ opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   let r;
   try{ r = await fetch(path, opt); }
@@ -535,7 +566,10 @@ function modal({title, html, ok = "OK", cancel = "Cancel", danger = false, onOpe
       document.removeEventListener("keydown", onKey, true); back.remove(); S.modalOpen = false; try{ before?.focus?.(); }catch(e){}
       back.dataset.choice = c; resolve(c !== "0" ? back : null);
     };
-    const onKey = e => { if (e.key === "Escape"){ e.preventDefault(); close(false); } else if (e.key === "Enter" && e.target.tagName !== "TEXTAREA"){ e.preventDefault(); close(true); } };
+    const onKey = e => {
+      if (e.key === "Escape"){ e.preventDefault(); close(false); }
+      else if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !(e.target.closest && e.target.closest("[data-keep-enter]"))){ e.preventDefault(); close(true); }
+    };   // a search box marked data-keep-enter keeps Enter (a scanner ends each scan with it)
     back.addEventListener("click", e => { if (e.target === back) close(false); const b = e.target.closest("button[data-v]"); if (b) close(b.dataset.v); });
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(back);
@@ -701,8 +735,9 @@ async function loadItems(){
   if (r.same) return;
   S.itemsV = r.v;
   S.items = new Map(); S.byG = new Map(); S.bySku = new Map();
-  for (const [id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats, price, alts] of r.rows){
-    S.items.set(id, {id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats: cats || [], price: price || "", alts: alts || []});
+  for (const [id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats, price, alts, bins, counted, kit] of r.rows){
+    S.items.set(id, {id, parent, name, attrs, sku, gtin, stock, scope, why, labels, cats: cats || [], price: price || "", alts: alts || [],
+                     bins: bins || [], counted: counted || null, kit: !!kit});
   }
   reindex();
   renderMode();
@@ -739,6 +774,8 @@ function renderChrome(){
   const st = S.st;
   $("#ver").textContent = st.version;
   $("#navReports").hidden = !st.access.canManage;
+  $("nav button[data-tab=purchasing]").hidden = !st.access.canManage;
+  if (!st.access.canManage && S.tab === "purchasing") showTab("station");
   const mc = $("#modeChip");
   mc.className = "chip " + (st.woo.write === "on" ? "ok" : st.woo.write === "dryrun" ? "dup" : "err");
   mc.textContent = st.woo.write === "on" ? "Live" : st.woo.write === "dryrun" ? "Dry run" : "Writes off";
@@ -756,6 +793,7 @@ function renderChrome(){
   if (st.woo.ready && !st.setup.confirmed) b.push(`<div class="banner warn"><b>Changes are locked until Setup is confirmed.</b> Scanning and lookups work; tick your distributor feed prefixes on the <a href="#" data-goto="setup">Setup</a> tab to unlock changes.</div>`);
   if (st.woo.write === "dryrun") b.push(`<div class="banner info"><b>Dry run.</b> Every change is checked against the live store and logged, but nothing is sent to WooCommerce. When the log looks right, set WOO_WRITE=on in stock.env and restart.</div>`);
   if (st.woo.write === "off") b.push(`<div class="banner warn"><b>Writes are off</b> (WOO_WRITE=off): changes are refused.</div>`);
+  if (st.fullCount) b.push(`<div class="banner info"><b>Full count going</b> since ${esc(when(st.fullCount.since))}. Count bin by bin in Count mode; finish it on the <a href="#" data-goto="products">Products</a> tab.</div>`);
   if (st.payables && st.payables.overdue > 0) b.push(`<div class="banner warn"><b>Overdue vendor invoices: $${(+st.payables.overdue).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}.</b> See <a href="#" data-goto="purchasing">Purchasing</a>.</div>`);
   if (st.gb && st.gb.attention) b.push(`<div class="banner warn"><b>GunBroker needs a look:</b> ${st.gb.attention} listing${st.gb.attention === 1 ? "" : "s"} or sale${st.gb.attention === 1 ? "" : "s"} flagged. See the <a href="#" data-goto="gunbroker">GunBroker</a> tab.</div>`);
   if (st.gb && st.gb.error && st.gb.ready) b.push(`<div class="banner warn"><b>GunBroker sync problem:</b> ${esc(st.gb.error)}</div>`);
@@ -776,18 +814,47 @@ document.addEventListener("click", async e => {
 function signIn(code){
   const p = (S.st?.people || []).find(x => x.code === code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
   if (!p){ beep("err"); flash("err", "", "Badge not recognized", `USR-${code} isn't set up. Add the person on the People tab.`); return; }
-  if (S.op && S.op.code === p.code){ beep("dup"); flash("dup", "", `Still signed in as ${p.name}`, ""); return; }
+  if (S.op && S.op.code === p.code){
+    if (p.role === "manager" && !S.mgr && !S.st.access.password) return mgrPrompt(p);   // a wrong PIN, or skipped: scan again to retry
+    beep("dup"); flash("dup", "", `Still signed in as ${p.name}`, ""); return;
+  }
   saveLists();
+  if (S.mgr) mgrSignOut(true);
   S.op = {code: p.code, name: p.name};
   store.set("op", {code: p.code, name: p.name, at: Date.now()});
   loadLists();
   beep("done"); flash("ok", "", `Hi, ${p.name}`, `${MODE_NAMES[S.mode]} mode. Changes are logged under your name.`);
   renderOp(); renderMode();
+  if (p.role === "manager" && !S.st.access.password) mgrPrompt(p);
+}
+async function mgrPrompt(p){
+  if (!p.hasPin){ toast("You're a manager, but no PIN is set yet: set one on the People tab with the shop password", 7000); return; }
+  const back = await modal({title: `Manager PIN for ${p.name}`, ok: "Sign in as manager", cancel: "Not now (staff)",
+    html: `<p class="small muted" style="margin-top:0">For purchasing, invoices, reports and settings on this station. Skip it to work as staff.</p>
+      <input id="mgrPin" type="password" inputmode="numeric" autocomplete="off" maxlength="8" style="width:100%;font-size:1.4rem;letter-spacing:.3em">`});
+  if (!back){ focusScan(); return; }
+  try{
+    const r = await api("/api/manager/login", {code: p.code, pin: back.querySelector("#mgrPin").value});
+    S.mgr = {token: r.token, name: r.name, code: r.code};
+    store.set("mgr", {...S.mgr, at: Date.now()});
+    beep("done"); flash("ok", "", `${r.name}: manager`, "Purchasing, invoices, reports and settings are open on this station until you sign out.");
+    await loadState(true); renderOp();
+  }catch(e){ beep("err"); flash("err", "", "Not signed in as manager", e.message); }
+  focusScan();
+}
+function mgrSignOut(quiet){
+  if (!S.mgr) return;
+  const tok = S.mgr.token;
+  fetch("/api/manager/logout", {method: "POST", credentials: "same-origin", headers: {"X-Requested-With": "stock", "X-Stock-Manager": tok}}).catch(() => {});
+  S.mgr = null; store.set("mgr", null);
+  if (!quiet) toast("Manager access ended");
+  loadState(true);
 }
 function signOut(quiet){
   if (!S.op){ if (!quiet){ beep("dup"); flash("dup", "", "Nobody is signed in", ""); } return; }
   saveLists();
   const name = S.op.name;
+  mgrSignOut(true);
   S.op = null; store.set("op", null);
   loadLists();
   if (!quiet){ beep("done"); flash("ok", "", `Signed out ${name}`, "Their lists are kept for when they sign in again."); }
@@ -795,16 +862,16 @@ function signOut(quiet){
 }
 function renderOp(){
   const c = $("#opChip");
-  if (S.op){ c.className = "chip ok"; c.innerHTML = `${esc(S.op.name)} <button id="signOutBtn" title="Sign out">sign out</button>`; }
+  if (S.op){ c.className = "chip ok"; c.innerHTML = `${esc(S.op.name)}${S.mgr ? ` <b>· manager</b>` : ""} <button id="signOutBtn" title="Sign out">sign out</button>`; }
   else { c.className = "chip" + (S.st && S.st.requireBadge && S.st.people.length ? " dup" : ""); c.textContent = "Not signed in"; }
 }
 $("#opChip").addEventListener("click", e => { if (e.target.id === "signOutBtn") signOut(); });
-function activity(){ S.lastActivity = Date.now(); if (S.op) store.set("op", {...S.op, at: Date.now()}); }
+function activity(){ S.lastActivity = Date.now(); if (S.op) store.set("op", {...S.op, at: Date.now()}); if (S.mgr) store.set("mgr", {...S.mgr, at: Date.now()}); }
 setInterval(() => { if (S.op && Date.now() - S.lastActivity > 10 * 60 * 1000){ signOut(true); toast("Signed out after 10 idle minutes"); } }, 20000);
 
 /* lists are kept per person, so one person's scans are never credited to another */
 function listKey(){ return "lists." + (S.op ? S.op.code : "_"); }
-function saveLists(){ store.set(listKey(), {lists: S.lists, adj: S.adj, review: S.review, ret: S.ret, rpo: S.rpo}); }
+function saveLists(){ store.set(listKey(), {lists: S.lists, adj: S.adj, review: S.review, ret: S.ret, rpo: S.rpo, countBin: S.countBin}); }
 function loadLists(){
   const v = store.get(listKey(), null) || {};
   S.lists = Object.assign({receive: [], count: [], adjust: []}, v.lists || {});
@@ -812,6 +879,7 @@ function loadLists(){
   S.review = v.review || null;
   S.ret = v.ret && v.ret.order ? v.ret : {order: null, back: {}, note: ""};
   S.rpo = v.rpo && v.rpo.po ? v.rpo : {po: null, now: {}, extras: [], freight: "", fees: "", invoice: ""};
+  S.countBin = v.countBin || null;
   S.last = null; S.pendingQty = 0;
 }
 
@@ -824,7 +892,7 @@ function showTab(name){
   if (name === "reports") loadReport();
   if (name === "gunbroker") loadGb();
   if (name === "purchasing") loadPurchasing();
-  if (name === "products"){ renderProducts(); setTimeout(() => $("#prodQ").focus(), 0); }
+  if (name === "products"){ renderProducts(); loadBins(); loadKits(); setTimeout(() => $("#prodQ").focus(), 0); }
   if (name === "station") focusScan();
   if (name === "labels") { renderLabels(); loadNoSku(); }
   if (name === "log") loadLog(true);
@@ -881,6 +949,7 @@ function handleScan(v){
   if (qm) return S.mode === "return" ? returnQty(+qm[1]) : S.mode === "receive" && S.rpo.po ? poQty(+qm[1]) : setQty(+qm[1]);
   hideLink();
   if (/^PO-?\d{1,7}$/i.test(v)){ if (S.mode !== "receive") setMode("receive"); return loadPoForReceive(v); }
+  if (/^BIN-/i.test(v)) return binScan(v);
   if (S.mode === "return") return returnScan(v);
   if (S.mode === "receive" && S.rpo.po) return poReceiveScan(v);
   const ids = matchCode(v);
@@ -903,6 +972,7 @@ function gotItem(it, code){
   }
   if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", "Changes are logged under the person who scanned them."); return; }
   if (it.scope !== "shop"){ beep("err"); flash("err", "", `${itemTitle(it)} can't be changed`, it.why || "Read-only"); return; }
+  if (it.kit){ beep("err"); flash("err", "", `${itemTitle(it)} is a kit`, "Its stock comes from its parts: receive, count or adjust those. (Lookup shows what it's made of.)"); return; }
   if (S.review && S.mode === "count"){ S.review = null; }
   const list = S.lists[S.mode];
   const step = S.pendingQty || 1;
@@ -1046,7 +1116,10 @@ function renderMode(flashId){
   if (S.mode === "receive") action = `Add ${units} unit${units === 1 ? "" : "s"} to stock`;
   if (S.mode === "count") action = `Review ${list.length} product${list.length === 1 ? "" : "s"}`;
   if (isAdj) action = `${down ? "Remove" : "Add"} ${units} unit${units === 1 ? "" : "s"}${S.adj.reason ? " (" + S.adj.reason + ")" : ""}`;
-  p.innerHTML = `<div class="panel">${head}
+  const binHead = S.mode === "count" && S.countBin ? `<div class="row" style="margin-bottom:10px"><span class="tag info">Bin ${esc(S.countBin.code)}</span>
+    <span class="grow small">Counting ${esc(S.countBin.name || "bin " + S.countBin.code)}: ${S.countBin.items.length} part${S.countBin.items.length === 1 ? "" : "s"} there. What you scan is put in this bin.</span>
+    <button class="btn sm" id="binStop">Not this bin</button></div>` : (S.mode === "count" ? `<p class="small muted" style="margin-top:0">Counting a shelf or bin? Scan its bin label first.</p>` : "");
+  p.innerHTML = `<div class="panel">${head}${binHead}
     ${list.length ? `<div class="tablewrap"><table><thead><tr><th>Product</th>${S.mode === "count" ? "" : `<th class="num">In stock</th>`}<th class="num">${qtyHead}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">${esc(empty)}</div>`}
     <div class="listfoot"><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${S.mode === "count" ? "" : `, ${units} unit${units === 1 ? "" : "s"}`}</span><span class="grow"></span>
       ${list.length ? `<button class="btn" id="listClear">Clear</button>` : ""}
@@ -1149,7 +1222,7 @@ function finishBatch(b){
   }
   if (b.kind === "count" && S.review){
     for (const j of b.jobs){ const r = S.review.rows.find(x => x.id === j.item_id); if (r){ r.result = j.status; r.err = j.error; } }
-    if (bad.length === 0){ S.review = null; S.lists.count = []; }
+    if (bad.length === 0){ S.review = null; S.lists.count = []; S.countBin = null; }
     saveLists();
   }
   if (bad.length){ beep("err"); flash("err", "", `${bad.length} of ${b.jobs.length} not changed`, bad[0].error || "See below."); }
@@ -1195,12 +1268,18 @@ async function startReview(){
   if (!list.length) return;
   flash("", "", "Reading live stock…", `${list.length} product${list.length === 1 ? "" : "s"} from WooCommerce`);
   try{
-    const r = await api("/api/live", {ids: list.map(l => l.id)});
-    S.review = {at: new Date().toISOString(), rows: list.map(l => {
-      const live = r.items[String(l.id)] || {};
-      const stock = live.stock;
-      return {id: l.id, counted: l.n, live: stock, fresh: !!live.fresh, scope: live.scope || "shop", apply: stock !== null && stock !== undefined && stock !== l.n && (live.scope || "shop") === "shop"};
-    })};
+    let missing = [];
+    if (S.countBin){   // the bin's parts that weren't scanned: gone, or just not looked for?
+      const b = (await api("/api/bin?code=" + encodeURIComponent(S.countBin.code))).bin;
+      missing = b.items.filter(x => x.scope === "shop" && !list.find(l => l.id === x.id)).map(x => x.id);
+    }
+    const r = await api("/api/live", {ids: [...list.map(l => l.id), ...missing]});
+    const row = (id, counted, miss) => {
+      const live = r.items[String(id)] || {}, stock = live.stock;
+      return {id, counted, live: stock, fresh: !!live.fresh, scope: live.scope || "shop", missing: miss,
+              apply: !miss && stock !== null && stock !== undefined && stock !== counted && (live.scope || "shop") === "shop"};
+    };
+    S.review = {at: new Date().toISOString(), rows: [...list.map(l => row(l.id, l.n, false)), ...missing.map(id => row(id, 0, true))]};
     saveLists();
     await loadItems();
     const diffs = S.review.rows.filter(x => x.apply).length;
@@ -1211,7 +1290,7 @@ async function startReview(){
 }
 function renderReview(){
   const rows = S.review.rows.map(r => { const it = S.items.get(r.id) || {name: "Item " + r.id, attrs: "", sku: "", gtin: ""};
-    return `<tr data-id="${r.id}"><td>${itemCell(it)}${r.scope !== "shop" ? `<div class="item-sub" style="color:var(--err)">${esc(it.why || "Can't be changed")}</div>` : ""}${r.err ? `<div class="item-sub" style="color:var(--err)">${esc(r.err)}</div>` : ""}</td>
+    return `<tr data-id="${r.id}"><td>${itemCell(it)}${r.missing ? `<div class="item-sub"><span class="tag dup">in bin ${esc(S.countBin ? S.countBin.code : "")}, not scanned</span> tick to set it to 0 (it's gone)</div>` : ""}${r.scope !== "shop" ? `<div class="item-sub" style="color:var(--err)">${esc(it.why || "Can't be changed")}</div>` : ""}${r.err ? `<div class="item-sub" style="color:var(--err)">${esc(r.err)}</div>` : ""}</td>
       <td class="num"><input class="qty" type="number" min="0" value="${r.counted}" aria-label="Counted"></td>
       <td class="num">${fmtNum(r.live)}${r.fresh ? "" : ` <span class="tag dup" title="Couldn't read it live">old</span>`}</td>
       <td class="num diff"></td>
@@ -1233,18 +1312,46 @@ function updateReviewRow(tr){
 function renderReviewFoot(){
   const n = S.review.rows.filter(r => r.apply && r.counted !== r.live).length;
   const b = $("#revApply");
-  if (b){ b.textContent = `Apply ${n} change${n === 1 ? "" : "s"}`; b.disabled = !n || !canWrite(); }
+  if (b){ b.textContent = n ? `Save the count and apply ${n} change${n === 1 ? "" : "s"}` : "Save the count (all match)"; b.disabled = !canWrite(); }
 }
 async function applyCount(){
   if (needBadge()){ beep("err"); flash("err", "", "Scan your badge first", ""); return focusScan(); }
-  const rows = S.review.rows.filter(r => r.apply && r.counted !== r.live && r.live !== null);
+  const rows = S.review.rows.filter(r => !r.missing || r.apply);   // a bin's unscanned part counts only if ticked
   if (!rows.length) return;
+  const changes = rows.filter(r => r.apply && r.counted !== r.live && r.live !== null);
   try{
-    const r = await api("/api/commit", {kind: "count", lines: rows.map(x => ({id: x.id, counted: x.counted, expected: x.live}))});
-    trackBatch(r.batch, "count", `Count: ${rows.length} change${rows.length === 1 ? "" : "s"}`, rows.map(x => ({id: x.id, n: x.counted})));
-    flash("ok", "", "Sending to WooCommerce…", "");
+    const r = await api("/api/count/done", {bin_id: S.countBin ? S.countBin.id : null, assign: true,
+      assign_ids: rows.filter(x => !x.missing).map(x => x.id),
+      lines: rows.map(x => ({id: x.id, counted: x.counted, expected: x.live, apply: !!(x.apply && x.counted !== x.live && x.live !== null)}))});
+    if (r.batch){
+      trackBatch(r.batch, "count", `Count${S.countBin ? " of bin " + S.countBin.code : ""}: ${changes.length} change${changes.length === 1 ? "" : "s"}`, changes.map(x => ({id: x.id, n: x.counted})));
+      flash("ok", "", "Sending to WooCommerce…", `${r.recorded} part${r.recorded === 1 ? "" : "s"} counted`);
+    } else {
+      S.review = null; S.lists.count = []; S.countBin = null; saveLists();
+      beep("done"); flash("ok", "✓", "Count saved", `${r.recorded} part${r.recorded === 1 ? "" : "s"} counted, all matching` + (r.assigned ? `; ${r.assigned} put in the bin` : ""));
+      await loadItems(); renderMode();
+    }
   }catch(e){ beep("err"); flash("err", "", "Not sent", e.message); }
 }
+
+/* ---------- bins at the station: count a bin, or see what's in it ---------- */
+async function binScan(v){
+  try{
+    const b = (await api("/api/bin?code=" + encodeURIComponent(v))).bin;
+    if (S.mode === "count"){
+      if (S.review){ beep("err"); flash("err", "", "Finish the review first", "Save the count, or go back to the list."); return; }
+      S.countBin = {id: b.id, code: b.code, name: b.name, items: b.items.map(x => x.id)};
+      saveLists(); beep("done");
+      flash("ok", "", `Counting bin ${b.code}`, `${b.items.length} part${b.items.length === 1 ? "" : "s"} there. Scan everything on it; what isn't scanned is listed at the review.`);
+      return renderMode();
+    }
+    if (S.mode !== "lookup") setMode("lookup");
+    S.lookupId = null; S.lookupBin = b; beep("ok");
+    flash("ok", "", `Bin ${b.code}${b.name ? " · " + b.name : ""}`, `${b.items.length} part${b.items.length === 1 ? "" : "s"}`);
+    renderLookup();
+  }catch(e){ beep("err"); flash("err", "", "Unknown bin", e.message); }
+}
+$("#modePanel").addEventListener("click", e => { if (e.target.id === "binStop"){ S.countBin = null; saveLists(); renderMode(); focusScan(); } });
 
 /* ---------- lookup ---------- */
 async function showLookup(id, quiet){
@@ -1261,10 +1368,18 @@ async function showLookup(id, quiet){
     }
   }catch(e){ flash("err", "", "Couldn't load that product", e.message); }
 }
-const KIND = {receive: "Received", count: "Counted", adjust: "Adjusted", return: "Returned", note: "Order note", gtin: "Barcode", sku: "SKU", sale: "Sold elsewhere", create: "Created"};
+const KIND = {receive: "Received", count: "Counted", adjust: "Adjusted", return: "Returned", note: "Order note", gtin: "Barcode", sku: "SKU", sale: "Sold elsewhere", create: "Created", kit: "Kit parts", kitset: "Kit stock"};
 function renderLookup(d, loading){
   const p = $("#modePanel");
-  if (!S.lookupId){ p.innerHTML = `<div class="panel"><div class="empty">Scan a product, or search: <input type="search" id="lkQ" placeholder="Name or SKU" style="margin-left:6px"></div><div id="lkRes" class="results" hidden></div></div>`; return; }
+  if (!S.lookupId && S.lookupBin){
+    const b = S.lookupBin;
+    p.innerHTML = `<div class="panel"><div class="row"><h2 class="grow" style="margin:0">Bin ${esc(b.code)}${b.name ? ` · ${esc(b.name)}` : ""}</h2><button class="btn sm" data-lookup-act="closebin">Done</button></div>
+      <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Part</th><th class="num">In stock</th><th>Last counted</th></tr></thead><tbody>
+      ${b.items.map(x => `<tr data-lk="${x.id}" style="cursor:pointer"><td>${itemCell(x)}${x.main ? "" : `<div class="item-sub">also kept elsewhere (its main bin is another)</div>`}</td><td class="num">${fmtNum(x.stock)}</td><td class="small">${x.lastCount ? esc(day(x.lastCount)) : `<span class="tag dup">never</span>`}</td></tr>`).join("")
+        || `<tr><td colspan="3" class="empty">Nothing in this bin yet.</td></tr>`}</tbody></table></div></div>`;
+    return;
+  }
+  if (!S.lookupId){ p.innerHTML = `<div class="panel"><div class="empty">Scan a product or a bin, or search: <input type="search" id="lkQ" placeholder="Name or SKU" style="margin-left:6px"></div><div id="lkRes" class="results" hidden></div></div>`; return; }
   if (!d){ if (loading){ const it = S.items.get(S.lookupId); p.innerHTML = `<div class="panel"><h2>${esc(it ? itemTitle(it) : "…")}</h2><div class="muted">Reading live stock…</div></div>`; } return; }
   const scopeTag = d.scope === "shop" ? `<span class="tag ok">In-shop</span>` : `<span class="tag dup">${esc(d.why || "Read-only")}</span>`;
   p.innerHTML = `<div class="panel">
@@ -1280,6 +1395,10 @@ function renderLookup(d, loading){
       <dt>WooCommerce id</dt><dd>${d.id}${d.parent ? ` (variation of ${d.parent})` : ""} · ${esc(d.status)}</dd>
       <dt>Labels printed</dt><dd>${d.labels || 0}</dd>
       ${d.altBarcodes && d.altBarcodes.length ? `<dt>Extra barcodes</dt><dd class="mono">${d.altBarcodes.map(x => cpy(x)).join(", ")} <span class="muted small">(scan here; not in WooCommerce)</span></dd>` : ""}
+      ${d.kit ? `<dt>Kit</dt><dd>makes <b>${d.kit.available ?? "–"}</b> from ${d.kit.parts.map(p => `${p.qty} × ${esc(p.name)}${p.attrs ? " (" + esc(p.attrs) + ")" : ""} <span class="muted small">(${fmtNum(p.stock)} in stock)</span>`).join(", ")}</dd>` : ""}
+      ${(d.inKits || []).length ? `<dt>In kits</dt><dd>${d.inKits.map(k => `${k.qty} in each ${esc(k.name)}${k.attrs ? " (" + esc(k.attrs) + ")" : ""}`).join(" · ")}</dd>` : ""}
+      <dt>Bin</dt><dd>${(d.bins || []).length ? d.bins.map((b, i) => `<span class="tag ${i ? "" : "info"}">${esc(b)}</span>`).join(" ") : `<span class="muted">none</span>`} <button class="btn sm" data-lookup-act="bins">${(d.bins || []).length ? "Change" : "Set"}</button></dd>
+      <dt>Last counted</dt><dd>${(d.counts || []).length ? `${esc(when(d.counts[0].at))} by ${esc(d.counts[0].by)}: ${d.counts[0].counted}${d.counts[0].expected !== null && d.counts[0].expected !== d.counts[0].counted ? ` (WooCommerce had ${d.counts[0].expected})` : ""}` : `<span class="tag dup">never</span>`}</dd>
       <dt>Reorder</dt><dd>${d.reorder ? `at ${d.reorder.min}, up to ${d.reorder.max}${d.reorder.vendor ? ` from ${esc(d.reorder.vendor)}` : ""}` : `<span class="muted">not set</span>`} ${d.scope === "shop" ? `<button class="btn sm" data-lookup-act="reorder">${d.reorder ? "Change" : "Set"}</button>` : ""}</dd>
       ${d.costs ? `<dt>Cost</dt><dd>${d.costs.lastCost !== null ? `${money(d.costs.lastCost)} last (landed, ${esc(day(d.costs.lastAt))})${d.costs.avgCost !== null ? ` · ${money(d.costs.avgCost)} average of ${d.costs.received} received` : ""}` : `<span class="muted">nothing received on a PO yet</span>`}</dd>
         ${d.costs.onOrder ? `<dt>On order</dt><dd><b>${d.costs.onOrder}</b></dd>` : ""}
@@ -1302,10 +1421,12 @@ $("#modePanel").addEventListener("input", e => {
   res.hidden = !e.target.value.trim();
   res.innerHTML = found.map(it => `<button data-lk="${it.id}">${itemCell(it)}</button>`).join("") || `<div class="empty" style="padding:10px">No in-shop product matches.</div>`;
 });
-$("#modePanel").addEventListener("click", e => { const b = e.target.closest("[data-lk]"); if (b){ S.lookupId = +b.dataset.lk; showLookup(S.lookupId); } });
+$("#modePanel").addEventListener("click", e => { const b = e.target.closest("[data-lk]"); if (b){ S.lookupBin = null; S.lookupId = +b.dataset.lk; showLookup(S.lookupId); } });
 async function lookupAction(act){
   const it = S.items.get(S.lookupId);
   if (act === "close"){ S.lookupId = null; renderLookup(); return focusScan(); }
+  if (act === "closebin"){ S.lookupBin = null; renderLookup(); return focusScan(); }
+  if (act === "bins"){ await editBins(S.lookupId); showLookup(S.lookupId, true); return focusScan(); }
   if (act === "reorder"){ await editReorder(S.lookupId); showLookup(S.lookupId, true); return focusScan(); }
   if (!it) return;
   if (act === "label"){ addLabel(it.id, 1); toast(`Added to the label list: ${itemTitle(it)}`); return focusScan(); }
@@ -1669,9 +1790,9 @@ function renderLabels(flashId){
   $("#labZebra").disabled = !n || !!(sz && sz.sheet);
   $("#labZebra").title = sz && sz.sheet ? "Sheets print from the PDF on a regular printer" : "";
   const o = labelOpts();
-  $("#labName").checked = o.name; $("#labUpc").checked = o.upc;
+  $("#labName").checked = o.name; $("#labUpc").checked = o.upc; $("#labBin").checked = o.bin;
   const first = S.labels.map(l => S.items.get(l.id)).find(it => it && it.sku)
-    || {name: "Hornady Critical Defense 9mm Luger 115 gr FTX", attrs: "", sku: "HORN-9MM-115", gtin: "090255000001"};
+    || {name: "Hornady Critical Defense 9mm Luger 115 gr FTX", attrs: "", sku: "HORN-9MM-115", gtin: "090255000001", bins: ["A-03"]};
   if (sz){
     const pv = new SvgPage(sz.w, sz.h);
     drawLabel(pv, first, 0, 0, sz.w, sz.h, o);
@@ -1681,7 +1802,7 @@ function renderLabels(flashId){
   $("#labZebraPrev").hidden = !zp;
   if (zp){
     const src = "/api/labels/zebra-preview?" + new URLSearchParams({id: first.id || "", w: (sz.w / MM).toFixed(3), h: (sz.h / MM).toFixed(3),
-      sideways: sz.sideways ? 1 : 0, name: o.name ? 1 : 0, upc: o.upc ? 1 : 0});
+      sideways: sz.sideways ? 1 : 0, name: o.name ? 1 : 0, upc: o.upc ? 1 : 0, bin: o.bin ? 1 : 0});
     if ($("#labZebraImg").getAttribute("src") !== src) $("#labZebraImg").src = src;
   }
   let skip = $("#labSkip");
@@ -1690,9 +1811,9 @@ function renderLabels(flashId){
   } else if (!(sz && sz.sheet)) $("#labSkipWrap")?.remove();
 }
 $("#labSize").addEventListener("change", e => { store.set("labelSize", e.target.value); renderLabels(); });
-function labelOpts(){ return Object.assign({name: true, upc: false}, store.get("labelOpts", {})); }
-["labName", "labUpc"].forEach(id => $("#" + id).addEventListener("change", () => {
-  store.set("labelOpts", {name: $("#labName").checked, upc: $("#labUpc").checked}); renderLabels();
+function labelOpts(){ return Object.assign({name: true, upc: false, bin: false}, store.get("labelOpts", {})); }
+["labName", "labUpc", "labBin"].forEach(id => $("#" + id).addEventListener("change", () => {
+  store.set("labelOpts", {name: $("#labName").checked, upc: $("#labUpc").checked, bin: $("#labBin").checked}); renderLabels();
 }));
 $("#labTable").addEventListener("input", e => {
   const tr = e.target.closest("tr[data-id]");
@@ -1750,7 +1871,7 @@ $("#labTest").addEventListener("click", async () => {
 $("#labZebra").addEventListener("click", async () => {
   const lines = labelLines();
   const sz = labelSizes().find(s => s.id === $("#labSize").value), o = labelOpts();
-  try{ const r = await api("/api/labels/print", {lines, size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}, name: o.name, upc: o.upc}); toast(`Sent ${r.printed} label${r.printed === 1 ? "" : "s"} to the printer`); loadItems(); }
+  try{ const r = await api("/api/labels/print", {lines, size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}, name: o.name, upc: o.upc, bin: o.bin}); toast(`Sent ${r.printed} label${r.printed === 1 ? "" : "s"} to the printer`); loadItems(); }
   catch(e){ toast(e.message, 6000); }
 });
 async function loadNoSku(){
@@ -1826,8 +1947,10 @@ function renderPeople(){
   const st = S.st;
   if (!st) return;
   $("#peopleTable tbody").innerHTML = st.people.map(p => `<tr><td>${esc(p.name)}</td><td><span class="qrbox">${qrSvg("USR-" + p.code, 1.5)}</span> <span class="mono">USR-${esc(p.code)}</span></td>
+    <td>${st.access.canManage ? `<select data-role="${esc(p.code)}" aria-label="Role"><option value="staff" ${p.role !== "manager" ? "selected" : ""}>Staff</option><option value="manager" ${p.role === "manager" ? "selected" : ""}>Manager</option></select>
+        ${p.role === "manager" ? ` <button class="btn sm" data-pin="${esc(p.code)}">${p.hasPin ? "Change PIN" : "Set PIN"}</button>${p.hasPin ? "" : ` <span class="tag dup">no PIN</span>`}` : ""}` : esc(p.role === "manager" ? "Manager" : "Staff")}</td>
     <td class="num">${st.access.canManage ? `<button class="btn sm danger" data-rmp="${esc(p.code)}">Remove</button>` : ""}</td></tr>`).join("")
-    || `<tr><td colspan="3" class="empty">Nobody yet. Add people below, or import the Locator's people export.</td></tr>`;
+    || `<tr><td colspan="4" class="empty">Nobody yet. Add people below, or import the Locator's people export.</td></tr>`;
   $("#reqBadge").checked = st.requireBadge;
   $("#reqBadge").disabled = !st.access.canManage;
   $("#termPanel").hidden = !st.access.canManage;
@@ -1843,7 +1966,22 @@ $("#pImport").addEventListener("click", async () => {
   try{ const r = await api("/api/people/import", {csv: $("#pCsv").value}); toast(`Imported ${r.added}${r.skipped ? `, skipped ${r.skipped} (removed or already here)` : ""}`); $("#pCsv").value = ""; loadState(true); }
   catch(e){ toast(e.message, 5000); }
 });
+$("#peopleTable").addEventListener("change", async e => {
+  const r = e.target.closest("[data-role]");
+  if (!r) return;
+  try{ await api("/api/people/role", {code: r.dataset.role, role: r.value}); toast(r.value === "manager" ? "Now a manager: set their PIN" : "Now staff"); loadState(true); }
+  catch(err){ toast(err.message, 6000); loadState(true); }
+});
 $("#peopleTable").addEventListener("click", async e => {
+  const pb = e.target.closest("[data-pin]");
+  if (pb){
+    const back = await modal({title: "Manager PIN", ok: "Save PIN",
+      html: `<p class="small muted" style="margin-top:0">4 to 8 digits; not all one digit or a run like 1234. They enter it after scanning their badge. Five wrong tries lock it for 15 minutes; setting it again unlocks it.</p>
+        <input id="newPin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" style="width:100%;font-size:1.3rem;letter-spacing:.3em">`});
+    if (!back) return;
+    try{ await api("/api/people/pin", {code: pb.dataset.pin, pin: back.querySelector("#newPin").value}); toast("PIN saved"); loadState(true); }catch(err){ toast(err.message, 6000); }
+    return;
+  }
   const b = e.target.closest("[data-rmp]");
   if (!b) return;
   if (!await modal({title: "Remove this person?", html: "<p>Their badge stops working here. Their name stays on everything they did.</p>", ok: "Remove", danger: true})) return;
@@ -1909,7 +2047,34 @@ function renderSetupStatus(){
     : (sy.full_secs ? `<p class="small muted" style="margin:10px 0 0">The last full sync took ${esc(dur(sy.full_secs))}.</p>` : "");
   renderDbx();
   renderEmail();
+  renderMorning();
 }
+let mnLoaded = 0;
+async function renderMorning(force){
+  const el = $("#morningPanel");
+  el.hidden = !S.st.access.canManage;
+  if (el.hidden || (!force && Date.now() - mnLoaded < 30000)) return;
+  mnLoaded = Date.now();
+  try{
+    const m = await api("/api/morning/preview");
+    const al = Object.values(m.alerts || {});
+    $("#morningBody").innerHTML = `<dl class="card-grid">
+      <dt>Morning email</dt><dd>${m.time === "off" ? "off (MORNING_EMAIL_TIME=off)" : m.to ? `to <b>${esc(m.to)}</b>, every day at ${esc(m.time)}` : `<span style="color:var(--err)">no address: set MORNING_EMAIL_TO (or SHOP_EMAIL) in stock.env</span>`}
+        ${S.st.email.ready ? "" : ` <span class="tag dup">email isn't set up</span>`}</dd>
+      <dt>Last sent</dt><dd>${m.last ? `${esc(when(m.last.at))} to ${esc(m.last.to)}` : "not yet"}</dd>
+      <dt>Alerts</dt><dd>${m.alertsOn ? `emailed to <b>${esc(m.alertTo || "nobody yet")}</b> when something breaks, and again when it's fixed` : "off (ALERT_EMAILS=off)"}</dd>
+      <dt>Right now</dt><dd>${al.length ? al.map(a => `<div style="color:var(--err)">! ${esc(a)}</div>`).join("") : `<span class="tag ok">All clear</span>`}</dd></dl>
+      <p class="small muted" style="margin-bottom:0">The morning email: yesterday's sales, parts that need ordering, POs coming in, bills due, what's out of stock, and anything that needs attention. Change the address or time with MORNING_EMAIL_TO, MORNING_EMAIL_TIME and ALERT_EMAIL_TO in stock.env.</p>`;
+  }catch(e){ $("#morningBody").textContent = e.message; }
+}
+$("#mnPreview").addEventListener("click", async () => {
+  try{ const m = await api("/api/morning/preview");
+    await modal({title: m.subject, ok: "Close", cancel: "", html: `<pre class="small" style="white-space:pre-wrap;max-height:60vh;overflow:auto;font-family:var(--mono)">${esc(m.text)}</pre>`}); }
+  catch(e){ toast(e.message, 6000); }
+});
+$("#mnSend").addEventListener("click", async () => {
+  try{ toast("Sending…", 15000); const r = await api("/api/morning/send", {}); toast(`Sent to ${r.to}`, 5000); renderMorning(true); }catch(e){ toast(e.message, 8000); }
+});
 function renderEmail(){
   const e = S.st.email, el = $("#emailBody");
   if (el.contains(document.activeElement)) return;
@@ -2045,7 +2210,7 @@ $("#dbxBody").addEventListener("click", async e => {
 
 /* ---------- products: search and browse everything in the shop (like the Locator's Inventory tab) ---------- */
 let prodLimit = 200, prodRows = [];
-const PROD_KEYS = ["prodQ", "prodCat", "prodStock", "prodBar", "prodShow", "prodSort"];
+const PROD_KEYS = ["prodQ", "prodCat", "prodStock", "prodBar", "prodShow", "prodSort", "prodBin", "prodCounted"];
 function prodMatches(it, words, g){
   if (g && gkey(it.gtin) === g) return true;   // a UPC typed or scanned without its leading zeros, or as an EAN-13
   const hay = skey(`${it.name} ${it.attrs} ${it.sku} ${it.gtin} ${it.cats.join(" ")}`);
@@ -2061,10 +2226,17 @@ function renderProducts(){
   const qv = $("#prodQ").value, words = skey(qv).split(" ").filter(Boolean);
   const digits = qv.replace(/[\s-]/g, ""), g = /^\d{6,14}$/.test(digits) ? gkey(digits) : "";
   const cat = sel.value, stk = $("#prodStock").value, bar = $("#prodBar").value, show = $("#prodShow").value;
+  const binSel = $("#prodBin"), binCur = binSel.options.length > 1 ? binSel.value : (store.get("prod", {}).prodBin || "");
+  const allBins = [...new Set(all.flatMap(it => it.bins))].sort();
+  binSel.innerHTML = `<option value="">Any bin</option><option value="(none)" ${binCur === "(none)" ? "selected" : ""}>No bin</option>` + allBins.map(b => `<option ${b === binCur ? "selected" : ""}>${esc(b)}</option>`).join("");
+  const bin = binSel.value, cnt = $("#prodCounted").value;
+  const cut = new Date(Date.now() - 90 * 864e5).toISOString();
+  const okBin = it => !bin || (bin === "(none)" ? !it.bins.length : it.bins.includes(bin));
+  const okCnt = it => !cnt || (cnt === "never" ? !it.counted : !it.counted || it.counted < cut);
   const okStock = it => !stk || (it.stock !== null && (stk === "in" ? it.stock > 0 : stk === "low" ? it.stock <= 5 : stk === "out" ? it.stock === 0 : it.stock < 0));
   prodRows = all.filter(it => (show === "all" || it.scope === show)
     && (!cat || (cat === "(no category)" ? !it.cats.length : it.cats.includes(cat)))
-    && okStock(it) && (!bar || (bar === "noupc" ? !it.gtin : !it.sku))
+    && okStock(it) && okBin(it) && okCnt(it) && (!bar || (bar === "noupc" ? !it.gtin : !it.sku))
     && (!words.length || prodMatches(it, words, g)));
   const [key, dir] = $("#prodSort").value.split(":"), d = +dir;
   const text = it => key === "sku" ? it.sku || "~" : key === "cat" ? (it.cats[0] || "~") : itemTitle(it);
@@ -2086,11 +2258,13 @@ function renderProducts(){
       <td><div class="item-name">${esc(it.name)}</div>${it.attrs ? `<div class="item-sub">${esc(it.attrs)}</div>` : ""}${it.scope !== "shop" ? `<div class="item-sub"><span class="tag dup">Read-only</span> ${esc(it.why)}</div>` : ""}</td>
       <td class="mono small">${it.sku ? cpy(it.sku) : `<span class="muted">none</span>`}</td>
       <td class="mono small">${it.gtin ? cpy(it.gtin) : `<span class="muted">none</span>`}</td>
+      <td class="small mono">${esc(it.bins.join(" "))}</td>
       <td class="small">${esc(it.cats.join(", "))}</td>
       <td class="num ${it.stock === 0 ? "stock-zero" : it.stock < 0 && it.stock !== null ? "stock-neg" : ""}">${fmtNum(it.stock)}</td>
+      <td class="small">${it.counted ? esc(day(it.counted)) : `<span class="muted">never</span>`}</td>
       <td class="num small">${it.price ? "$" + esc(it.price) : ""}</td>
       <td class="num" style="white-space:nowrap">${it.sku ? `<button class="btn sm" data-lab="${it.id}" title="Add to the label list">Label</button>` : ""}</td></tr>`).join("")
-    || `<tr><td colspan="7" class="empty">${all.length ? "No products match." : "No products yet: wait for the first sync."}</td></tr>`;
+    || `<tr><td colspan="9" class="empty">${all.length ? "No products match." : "No products yet: wait for the first sync."}</td></tr>`;
   $("#prodMore").hidden = prodRows.length <= shown.length;
   store.set("prod", Object.fromEntries(PROD_KEYS.map(k => [k, $("#" + k).value])));
 }
@@ -2112,9 +2286,10 @@ $("#prodQ").addEventListener("keydown", e => {
   clearTimeout(prodT); prodLimit = 200; renderProducts();
   if (prodRows.length === 1) openLookup(prodRows[0].id);
 });
-["prodCat", "prodStock", "prodBar", "prodShow", "prodSort"].forEach(k => $("#" + k).addEventListener("change", () => { prodLimit = 200; renderProducts(); }));
+["prodCat", "prodStock", "prodBar", "prodShow", "prodSort", "prodBin", "prodCounted"].forEach(k => $("#" + k).addEventListener("change", () => { prodLimit = 200; renderProducts(); }));
 $("#prodReset").addEventListener("click", () => {
   $("#prodQ").value = ""; $("#prodCat").value = ""; $("#prodStock").value = ""; $("#prodBar").value = ""; $("#prodShow").value = "all"; $("#prodSort").value = "name:1";
+  $("#prodBin").value = ""; $("#prodCounted").value = "";
   prodLimit = 200; renderProducts(); $("#prodQ").focus();
 });
 $("#prodMore").addEventListener("click", () => { prodLimit += 200; renderProducts(); });
@@ -2249,6 +2424,7 @@ async function loadPurchasing(){
     await loadPos();
     await loadReorder();
     await loadBills();
+    await loadRmas();
   }catch(e){ toast(e.message); }
 }
 async function loadReorder(){
@@ -2343,7 +2519,7 @@ $("#vNew").addEventListener("click", () => editVendor());
 $("#vTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-v]"); if (tr) editVendor(P.vendors.find(v => v.id === +tr.dataset.v)); });
 
 /* a purchase order: a draft is edited here; a sent one is followed here and received at the station */
-function showPoPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = !on; $("#billPanel").hidden = true; if (!on) loadPurchasing(); }
+function showPoPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = !on; $("#billPanel").hidden = true; $("#rmaPanel").hidden = true; if (!on) loadPurchasing(); }
 $("#poNew").addEventListener("click", () => {
   if (!P.vendors.length) return toast("Add a vendor first");
   P.po = null;
@@ -2597,7 +2773,7 @@ $("#billStatus").addEventListener("change", loadBills);
 $("#billVendor").addEventListener("change", loadBills);
 $("#billTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-bill]"); if (tr) openBill(+tr.dataset.bill); });
 document.addEventListener("click", e => { const a = e.target.closest("[data-openbill]"); if (a){ e.preventDefault(); openBill(+a.dataset.openbill); } });
-function showBillPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = true; $("#billPanel").hidden = !on; if (!on) loadPurchasing(); }
+function showBillPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = true; $("#rmaPanel").hidden = true; $("#billPanel").hidden = !on; if (!on) loadPurchasing(); }
 
 async function newBill(kind){
   if (!P.vendors.length) return toast("Add a vendor first");
@@ -2810,6 +2986,327 @@ $("#payList").addEventListener("click", async () => {
     try{ await api("/api/payment/void", {id: +c.slice(2)}); toast("Payment voided"); loadPurchasing(); }catch(err){ toast(err.message, 6000); }
   }
 });
+
+/* ---------- bins and the full count ---------- */
+let BINS = [];
+async function loadBins(){
+  try{ BINS = (await api("/api/bins")).bins; }catch(e){ return; }
+  const cut = new Date(Date.now() - 90 * 864e5).toISOString();
+  $("#binTable tbody").innerHTML = BINS.map(b => `<tr data-bin="${b.id}"><td class="mono"><b>${esc(b.code)}</b></td><td>${esc(b.name || "")}</td><td class="num">${b.parts}</td><td class="num">${b.units}</td>
+      <td class="small">${b.oldest === null ? "–" : b.oldest === "never" || b.oldest < cut ? `<span class="tag dup">${b.oldest === "never" ? "some never" : esc(day(b.oldest))}</span>` : esc(day(b.oldest))}</td>
+      <td class="num"><button class="btn sm" data-binedit="${b.id}">Edit</button></td></tr>`).join("")
+    || `<tr><td colspan="6" class="empty">No bins yet. Add one for each shelf, drawer or bin.</td></tr>`;
+  loadFull();
+}
+async function editBin(b){
+  b = b || {};
+  const back = await modal({title: b.id ? `Bin ${b.code}` : "Add a bin", ok: "Save",
+    html: `<div class="formgrid"><label class="small" for="bnCode">Code</label><input id="bnCode" type="text" class="mono" value="${esc(b.code || "")}" placeholder="A-03">
+      <label class="small" for="bnName">Name</label><input id="bnName" type="text" value="${esc(b.name || "")}" placeholder="Back wall, top shelf">
+      <label class="small" for="bnNotes">Notes</label><input id="bnNotes" type="text" value="${esc(b.notes || "")}"></div>
+      ${b.id && S.st.access.canManage ? `<p><button class="btn sm danger" type="button" data-v="2">Remove this bin</button> <span class="small muted">Its parts are taken out of it, not deleted.</span></p>` : ""}`});
+  if (!back) return;
+  if (badgeFirst()) return;
+  try{
+    if (back.dataset.choice === "2"){
+      if (!await modal({title: `Remove bin ${b.code}?`, html: "<p>Its parts stay; they're just no longer in this bin.</p>", ok: "Remove", danger: true})) return;
+      await api("/api/bins/remove", {id: b.id}); toast("Removed");
+    } else {
+      await api("/api/bins", {id: b.id, code: back.querySelector("#bnCode").value, name: back.querySelector("#bnName").value, notes: back.querySelector("#bnNotes").value});
+      toast("Saved");
+    }
+    await loadItems(); loadBins();
+  }catch(e){ toast(e.message, 6000); }
+}
+$("#binNew").addEventListener("click", () => editBin());
+$("#binTable").addEventListener("click", e => { const b = e.target.closest("[data-binedit]"); if (b) editBin(BINS.find(x => x.id === +b.dataset.binedit)); });
+$("#binLabels").addEventListener("click", async () => {
+  if (!BINS.length) return toast("Add bins first");
+  const sizes = labelSizes();
+  const back = await modal({title: "Print bin labels", ok: "Print",
+    html: `<div class="results" style="max-height:40vh">${BINS.map(b => `<label style="display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line)"><input type="checkbox" value="${esc(b.code)}" checked><span class="mono">${esc(b.code)}</span> <span class="muted">${esc(b.name || "")}</span></label>`).join("")}</div>
+      <div class="row" style="margin-top:10px"><label class="small">Size <select id="blSize">${sizes.map(z => `<option value="${z.id}" ${z.id === store.get("labelSize", "3x2") ? "selected" : ""}>${esc(z.name)}</option>`).join("")}</select></label>
+      <label class="small">On <select id="blOut"><option value="pdf">a PDF</option>${S.st.label.printer ? `<option value="zebra">the Zebra</option>` : ""}</select></label></div>`});
+  if (!back) return;
+  const codes = [...back.querySelectorAll(".results input:checked")].map(c => c.value);
+  const sz = sizes.find(z => z.id === back.querySelector("#blSize").value);
+  if (!codes.length) return;
+  if (back.querySelector("#blOut").value === "zebra"){
+    if (sz.sheet) return toast("Sheets print from the PDF on a regular printer");
+    try{ const r = await api("/api/labels/bins", {codes, size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}}); toast(`Sent ${r.printed} bin label${r.printed === 1 ? "" : "s"}`); }catch(e){ toast(e.message, 8000); }
+    return;
+  }
+  const items = codes.map(c => { const b = BINS.find(x => x.code === c); return {sku: "BIN-" + c, name: b.name || "Bin " + c, attrs: "", gtin: ""}; });
+  downloadPdf(`bin-labels-${new Date().toISOString().slice(0, 10)}.pdf`, labelsPdf(items, sz, 0, {name: true, upc: false}));
+});
+async function editBins(id){
+  const it = S.items.get(id);
+  if (!it) return;
+  if (!BINS.length){ try{ BINS = (await api("/api/bins")).bins; }catch(e){} }
+  const back = await modal({title: `Bins: ${itemTitle(it)}`, ok: "Save",
+    html: `<p class="small muted" style="margin-top:0">Scan a bin label or type its code; separate several with commas, main bin first. Leave empty for none.</p>
+      <input id="ibCodes" type="text" class="mono" style="width:100%" value="${esc((it.bins || []).join(", "))}" list="ibList" autocomplete="off">
+      <datalist id="ibList">${BINS.map(b => `<option value="${esc(b.code)}">${esc(b.name || "")}</option>`).join("")}</datalist>
+      ${BINS.length ? "" : `<p class="small">No bins yet: add them on the Products tab.</p>`}`});
+  if (!back || badgeFirst()) return;
+  const codes = back.querySelector("#ibCodes").value.split(/[,\s]+/).map(x => x.trim()).filter(Boolean).map(x => x.replace(/^BIN-/i, ""));
+  try{ const r = await api("/api/item/bins", {item_id: id, bins: codes}); it.bins = r.bins; toast(r.bins.length ? `Bins: ${r.bins.join(", ")}` : "No bin now"); await loadItems(); }
+  catch(e){ toast(e.message, 6000); }
+}
+async function loadFull(){
+  const panel = $("#fullPanel");
+  panel.hidden = !(S.st && S.st.access.canManage);
+  if (panel.hidden) return;
+  let f;
+  try{ f = await api("/api/fullcount"); }catch(e){ return; }
+  $("#fullBody").innerHTML = f.active ? `<p style="margin-top:0"><span class="tag info">Going</span> since ${esc(when(f.active.started_at))} · <b>${f.counted}</b> of ${f.total} parts counted.
+      Count bin by bin in Count mode. When you're done, finish it: in-stock parts nobody counted are listed, and you choose which are really gone.</p>
+      <button class="btn primary" id="fullFinish">Finish the full count</button>`
+    : `<p style="margin-top:0">For a year-end (or any) wall-to-wall count: start it, count every bin in Count mode, then finish. At the end, every in-stock part nobody counted is listed, so nothing is missed.
+      ${f.last ? `Last one finished ${esc(when(f.last.finished_at))}.` : ""}</p><button class="btn" id="fullStart">Start a full count</button>`;
+}
+$("#fullBody").addEventListener("click", async e => {
+  try{
+    if (e.target.id === "fullStart"){
+      if (!await modal({title: "Start a full count?", html: "<p>Everything counted from now until you finish counts toward it. Sales and receiving carry on as usual.</p>", ok: "Start"})) return;
+      await api("/api/fullcount/start", {}); toast("Full count started"); loadState(true); return loadFull();
+    }
+    if (e.target.id === "fullFinish"){
+      const f = await api("/api/fullcount");
+      const back = await modal({title: `Finish: ${f.missing.length} in-stock part${f.missing.length === 1 ? "" : "s"} not counted`, ok: f.missing.length ? "Finish, setting the ticked ones to 0" : "Finish",
+        html: f.missing.length ? `<p class="small muted" style="margin-top:0">Tick the ones that really aren't in the shop: they're set to 0 in WooCommerce. Unticked ones keep their stock.</p>
+          <div class="results" style="max-height:50vh">${f.missing.map(x => `<label style="display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line)"><input type="checkbox" value="${x.id}">
+            <span class="grow">${esc(x.name)}${x.attrs ? " (" + esc(x.attrs) + ")" : ""}<div class="item-sub">${esc(x.sku)} · stock ${x.stock}${x.bins.length ? " · bin " + esc(x.bins.join(", ")) : " · no bin"}</div></span></label>`).join("")}</div>`
+          : `<p>Every in-stock part was counted.</p>`});
+      if (!back) return;
+      if (badgeFirst()) return;
+      const zero_ids = [...back.querySelectorAll(".results input:checked")].map(c => +c.value);
+      const r = await api("/api/fullcount/finish", {zero_ids});
+      if (r.batch) trackBatch(r.batch, "count", `Full count: ${r.zeroed} set to 0`);
+      toast(`Full count finished${r.zeroed ? `; ${r.zeroed} set to 0` : ""}`, 6000); loadState(true); loadFull();
+    }
+  }catch(err){ toast(err.message, 8000); }
+});
+
+/* ---------- returns to vendors (RMAs) ---------- */
+const RMA_STATUS = {open: ["", "Being put together"], shipped: ["info", "Shipped, waiting on credit"], credited: ["ok", "Credited"], closed: ["", "Closed"], cancelled: ["", "Cancelled"]};
+const rmaTag = st => { const [c, t] = RMA_STATUS[st] || ["", st]; return `<span class="tag ${c}">${esc(t)}</span>`; };
+const RM = {rma: null, edit: null, pile: []};
+async function loadRmas(){
+  try{
+    const rows = (await api("/api/rmas?status=" + $("#rmaStatus").value)).rmas;
+    $("#rmaTable tbody").innerHTML = rows.map(r => `<tr data-rma="${r.id}"><td class="mono"><b>${esc(r.number)}</b></td><td>${esc(r.vendor)}</td><td class="mono small">${esc(r.vendor_rma || "")}</td>
+      <td>${rmaTag(r.status)}${r.short ? ` <span class="tag dup">${money(r.short)} short</span>` : ""}</td><td class="num">${r.units}</td><td class="num">${money(r.expected)}</td>
+      <td class="small">${esc(r.ship_date || "")}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">No returns here.</td></tr>`;
+  }catch(e){}
+}
+$("#rmaStatus").addEventListener("change", loadRmas);
+$("#rmaTable").addEventListener("click", e => { const tr = e.target.closest("tr[data-rma]"); if (tr) openRma(+tr.dataset.rma); });
+function showRmaPanel(on){ $("#poList").hidden = on; $("#poPanel").hidden = true; $("#billPanel").hidden = true; $("#rmaPanel").hidden = !on; if (!on) loadPurchasing(); }
+$("#rmaNew").addEventListener("click", async () => {
+  if (!P.vendors.length) return toast("Add a vendor first");
+  RM.rma = null; RM.edit = {vendor_id: P.vendors[0].id, vendor_rma: "", reason: "", notes: "", lines: []};
+  showRmaPanel(true); await renderRma();
+});
+async function openRma(id){
+  try{
+    const r = (await api("/api/rma?id=" + id)).rma;
+    RM.rma = r;
+    RM.edit = r.status === "open" ? {id: r.id, vendor_id: r.vendor_id, vendor_rma: r.vendor_rma || "", reason: r.reason || "", notes: r.notes || "",
+      lines: r.lines.map(l => ({item_id: l.item_id, qty: l.qty, cost: l.cost, reason: l.reason || "", remove: !!l.remove, source_job_id: l.source_job_id}))} : null;
+    showRmaPanel(true); await renderRma();
+  }catch(e){ toast(e.message, 6000); }
+}
+async function renderRma(){
+  const el = $("#rmaPanel"), r = RM.rma, e = RM.edit;
+  if (e){
+    try{ RM.pile = (await api("/api/rma/damaged?vendor=" + e.vendor_id)).rows.filter(p => !e.lines.find(l => l.source_job_id === p.job_id)); }catch(err){ RM.pile = []; }
+    const v = P.vendors.find(x => x.id === e.vendor_id) || {};
+    el.innerHTML = `<div class="panel">
+      <div class="row"><button class="btn sm" data-ract="back">← Purchasing</button><h2 class="grow" style="margin:0">${r ? esc(r.number) + " (not shipped yet)" : "A return to a vendor"}</h2></div>
+      <div class="formgrid" style="margin-top:12px;max-width:640px">
+        <label class="small" for="rmVendor">Vendor</label><select id="rmVendor">${P.vendors.map(x => `<option value="${x.id}" ${x.id === e.vendor_id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+        <label class="small" for="rmRa">Their RA #</label><input id="rmRa" type="text" class="mono" value="${esc(e.vendor_rma)}" placeholder="the return authorization they gave you">
+        <label class="small" for="rmReason">Why</label><input id="rmReason" type="text" value="${esc(e.reason)}" placeholder="Damaged in shipping, wrong part, overstock…">
+      </div>
+      <input id="rmAdd" type="search" style="width:100%;margin-top:12px" placeholder="Scan or search a part going back from stock" autocomplete="off">
+      <div id="rmRes" class="results" hidden></div>
+      ${RM.pile.length ? `<h3>The damaged pile <span class="muted small">(already out of stock: returns logged as damaged, adjustments made as Damaged)</span></h3>
+        <div class="tablewrap"><table><tbody>${RM.pile.slice(0, 30).map(p => `<tr><td>${esc(p.name)}<div class="item-sub">${esc(p.sku || "")} · ${esc(p.reason)} · ${esc(day(p.at))}${p.vendor ? " · usually from " + esc(p.vendor) : ""}</div></td>
+          <td class="num">${p.qty}</td><td class="num"><button class="btn sm" data-pile="${p.job_id}">Add</button></td></tr>`).join("")}</tbody></table></div>` : ""}
+      <h3>Going back</h3>
+      <div class="tablewrap"><table id="rmLines"><thead><tr><th>Part</th><th class="num">Qty</th><th class="num">Credit each</th><th>Take out of stock when it ships</th><th>Why (this part)</th><th></th></tr></thead><tbody>
+        ${e.lines.map((l, i) => { const it = S.items.get(l.item_id) || {name: "Item " + l.item_id, attrs: "", sku: "", gtin: ""};
+          return `<tr data-rl="${i}"><td>${itemCell(it)}</td><td class="num"><input class="qty" type="number" min="1" data-rf="qty" value="${l.qty}"></td>
+            <td class="num"><input class="money" type="number" min="0" step="0.01" data-rf="cost" value="${l.cost ?? ""}" placeholder="what you paid"></td>
+            <td>${l.source_job_id ? `<span class="small muted">already out (damaged pile)</span>` : `<label class="inline small"><input type="checkbox" data-rf="remove" ${l.remove ? "checked" : ""}> yes</label>`}</td>
+            <td><input type="text" data-rf="reason" value="${esc(l.reason)}" style="width:100%"></td><td class="num"><button class="btn sm" data-rrm>✕</button></td></tr>`; }).join("")
+          || `<tr><td colspan="6" class="empty">Nothing yet: scan parts from stock, or add from the damaged pile.</td></tr>`}</tbody></table></div>
+      <textarea id="rmNotes" placeholder="Notes for the vendor (printed on the form)" style="margin-top:10px;min-height:50px">${esc(e.notes)}</textarea>
+      <div class="listfoot">${r ? `<button class="btn danger" data-ract="cancel">Cancel this return</button>` : ""}<span class="grow"></span>
+        <button class="btn" data-ract="save">Save</button><button class="btn" data-ract="pdf">Download the form</button>
+        <button class="btn" data-ract="email" ${v.email && S.st.email.ready ? "" : "disabled"}>Email it to ${esc(v.name || "the vendor")}</button>
+        <button class="btn primary" data-ract="ship" ${e.lines.length ? "" : "disabled"}>Ship it</button></div>
+      <p class="small muted" style="margin-bottom:0">Credit each starts at what you last paid this vendor. Shipping takes the from-stock parts out of WooCommerce, logged as "Returned to vendor".</p></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="panel">
+    <div class="row"><button class="btn sm" data-ract="back">← Purchasing</button><h2 class="grow" style="margin:0">${esc(r.number)} · ${esc(r.vendor)}</h2>${rmaTag(r.status)}</div>
+    <p class="small muted">${r.vendor_rma ? `Their RA # <b class="mono">${esc(r.vendor_rma)}</b> · ` : ""}shipped ${esc(r.ship_date || "")}${r.carrier ? " by " + esc(r.carrier) : ""}${r.tracking ? ` · tracking <span class="mono">${cpy(r.tracking)}</span>` : ""}${r.emailed_at ? ` · emailed ${esc(when(r.emailed_at))}` : ""}${r.reason ? ` · ${esc(r.reason)}` : ""}</p>
+    <div class="tablewrap"><table><thead><tr><th>Part</th><th class="num">Qty</th><th class="num">Credit each</th><th class="num">Total</th><th>Stock</th></tr></thead><tbody>
+      ${r.lines.map(l => `<tr><td><div class="item-name">${esc(l.name)}</div><div class="item-sub mono">${esc(l.sku || "")}${l.reason ? " · " + esc(l.reason) : ""}</div></td><td class="num">${l.qty}</td>
+        <td class="num">${money(l.cost)}</td><td class="num">${money(l.cost * l.qty)}</td><td class="small">${l.job_id ? statusTag(l.jobStatus || "pending") + " taken out" : l.source_job_id ? "already out" : "–"}</td></tr>`).join("")}
+      <tr class="totals"><td colspan="3" class="num">Credit expected</td><td class="num">${money(r.expected)}</td><td></td></tr></tbody></table></div>
+    ${r.credit ? `<p>Credit <b>${esc(r.credit.number)}</b>: ${money(r.credit.total)} on ${esc(r.credit.date)}${r.short ? ` <span class="tag dup">${money(r.short)} less than expected</span>` : ""} · ${S.st.access.canManage ? `<a href="#" data-openbill="${r.credit.id}">apply it to a bill</a>` : "apply it to a bill on the Purchasing tab"}</p>` : ""}
+    ${r.close_note ? `<p class="small"><b>Closed:</b> ${esc(r.close_note)}</p>` : ""}
+    <div class="listfoot"><button class="btn" data-ract="pdf">Download the form</button><span class="grow"></span>
+      ${r.status === "shipped" ? `<button class="btn primary" data-ract="credit" ${S.st.access.canManage ? "" : "disabled title='The shop password'"}>Record their credit</button>` : ""}
+      ${["shipped", "credited"].includes(r.status) ? `<button class="btn" data-ract="close">Close it</button>` : ""}</div></div>`;
+}
+$("#rmaPanel").addEventListener("input", ev => {
+  const e = RM.edit, t = ev.target;
+  if (!e) return;
+  if (t.id === "rmRa") e.vendor_rma = t.value;
+  if (t.id === "rmReason") e.reason = t.value;
+  if (t.id === "rmNotes") e.notes = t.value;
+  if (t.id === "rmAdd"){
+    const res = $("#rmRes"), found = searchItems(t.value, 25, ["shop"]);
+    res.hidden = !t.value.trim();
+    res.innerHTML = found.map(it => `<button data-radd="${it.id}">${itemCell(it)}<div class="item-sub">in stock ${fmtNum(it.stock)}</div></button>`).join("") || `<div class="empty" style="padding:10px">No in-shop part matches.</div>`;
+  }
+  const tr = t.closest("tr[data-rl]");
+  if (tr && t.dataset.rf){ const l = e.lines[+tr.dataset.rl]; l[t.dataset.rf] = t.dataset.rf === "remove" ? t.checked : t.value; }
+});
+$("#rmaPanel").addEventListener("change", ev => {
+  const e = RM.edit, t = ev.target;
+  if (!e) return;
+  if (t.id === "rmVendor"){ e.vendor_id = +t.value; renderRma(); }
+  const tr = t.closest("tr[data-rl]");
+  if (tr && t.dataset.rf === "remove") e.lines[+tr.dataset.rl].remove = t.checked;
+});
+$("#rmaPanel").addEventListener("keydown", ev => {
+  if (ev.target.id !== "rmAdd" || ev.key !== "Enter") return;
+  ev.preventDefault();
+  const v = ev.target.value.trim(), ids = matchCode(v).filter(i => S.items.get(i)?.scope === "shop");
+  const found = ids.length ? ids.map(i => S.items.get(i)) : searchItems(v, 2, ["shop"]);
+  if (found.length === 1){ rmaAdd(found[0].id); beep("ok"); } else beep("err");
+});
+function rmaAdd(id){
+  const e = RM.edit, l = e.lines.find(x => x.item_id === id && !x.source_job_id);
+  if (l) l.qty = (+l.qty || 0) + 1; else e.lines.push({item_id: id, qty: 1, cost: "", reason: "", remove: true, source_job_id: null});
+  renderRma().then(() => { const i = $("#rmAdd"); if (i) i.focus(); });
+}
+$("#rmaPanel").addEventListener("click", async ev => {
+  const e = RM.edit;
+  const add = ev.target.closest("[data-radd]");
+  if (add) return rmaAdd(+add.dataset.radd);
+  const pile = ev.target.closest("[data-pile]");
+  if (pile){ const p = RM.pile.find(x => x.job_id === +pile.dataset.pile); e.lines.push({item_id: p.item_id, qty: p.qty, cost: "", reason: p.reason, remove: false, source_job_id: p.job_id}); return renderRma(); }
+  if (ev.target.closest("[data-rrm]")){ e.lines.splice(+ev.target.closest("tr").dataset.rl, 1); return renderRma(); }
+  const b = ev.target.closest("[data-ract]");
+  if (!b) return;
+  const act = b.dataset.ract;
+  if (act === "back") return showRmaPanel(false);
+  if (badgeFirst()) return;
+  try{
+    const save = async () => { const r = (await api("/api/rma", {id: e.id, vendor_id: e.vendor_id, vendor_rma: e.vendor_rma, reason: e.reason, notes: e.notes,
+      lines: e.lines.map(l => ({item_id: l.item_id, qty: +l.qty, cost: l.cost === "" ? null : +l.cost, reason: l.reason, remove: l.remove, source_job_id: l.source_job_id}))})).rma;
+      RM.rma = r; e.id = r.id; return r; };
+    if (act === "save"){ const r = await save(); toast(`Saved ${r.number}: ${money(r.expected)} credit expected`); return openRma(r.id); }
+    if (act === "pdf"){ const id = e ? (await save()).id : RM.rma.id; return downloadFile(`/api/rma/pdf?id=${id}`, `${(RM.rma && RM.rma.number) || "return"}.pdf`); }
+    if (act === "email"){ const r = await save();
+      if (!await modal({title: `Email ${r.number}?`, html: `<p>To ${esc((P.vendors.find(x => x.id === r.vendor_id) || {}).email || "")}, with the return form attached.</p>`, ok: "Send it"})) return;
+      await api("/api/rma/email", {id: r.id}); toast("Emailed"); return openRma(r.id); }
+    if (act === "ship"){
+      const r = await save();
+      const back = await modal({title: `Ship ${r.number}?`, ok: "Shipped",
+        html: `<div class="formgrid"><label class="small" for="shDate">Shipped on</label><input id="shDate" type="date" value="${isoDay()}">
+          <label class="small" for="shCarrier">Carrier</label><input id="shCarrier" type="text" placeholder="UPS, FedEx, USPS…">
+          <label class="small" for="shTrack">Tracking #</label><input id="shTrack" type="text" class="mono"></div>
+          <p class="small">${r.lines.filter(l => l.remove).length ? `The parts going back from stock come out of WooCommerce now.` : "Everything on it is already out of stock."} Credit expected: <b>${money(r.expected)}</b>.</p>`});
+      if (!back) return openRma(r.id);
+      const s2 = (await api("/api/rma/ship", {id: r.id, date: back.querySelector("#shDate").value, carrier: back.querySelector("#shCarrier").value, tracking: back.querySelector("#shTrack").value})).rma;
+      if (s2.batch) trackBatch(s2.batch, "adjust", `${s2.number}: returned to vendor`);
+      toast(`${s2.number} shipped`); return openRma(s2.id);
+    }
+    if (act === "cancel"){ if (!await modal({title: "Cancel this return?", html: "<p>Nothing has shipped; it's kept as cancelled.</p>", ok: "Cancel it", danger: true})) return;
+      await api("/api/rma/close", {id: e.id, action: "cancel"}); toast("Cancelled"); return openRma(e.id); }
+    if (act === "credit"){
+      const r = RM.rma;
+      const back = await modal({title: `${r.vendor}'s credit for ${r.number}`, ok: "Record it",
+        html: `<div class="formgrid"><label class="small" for="crNum">Their credit #</label><input id="crNum" type="text" class="mono">
+          <label class="small" for="crDate">Date</label><input id="crDate" type="date" value="${isoDay()}">
+          <label class="small" for="crAmt">Amount</label><input id="crAmt" type="number" step="0.01" min="0" value="${r.expected.toFixed(2)}"></div>
+          <p class="small muted">It goes on ${esc(r.vendor)}'s account as a credit, to apply to one of their bills (Vendor invoices).</p>`});
+      if (!back) return;
+      await api("/api/rma/credit", {id: r.id, number: back.querySelector("#crNum").value, date: back.querySelector("#crDate").value, amount: +back.querySelector("#crAmt").value});
+      toast("Credit recorded"); return openRma(r.id);
+    }
+    if (act === "close"){
+      const r = RM.rma;
+      const back = await modal({title: `Close ${r.number}?`, ok: "Close it",
+        html: `${r.status === "shipped" ? `<p>No credit is recorded. Closing says none is coming (or it was settled another way).</p>` : ""}<input id="clNote" type="text" style="width:100%" placeholder="A note: why, or what was agreed">`});
+      if (!back) return;
+      await api("/api/rma/close", {id: r.id, action: "close", note: back.querySelector("#clNote").value}); toast("Closed"); return openRma(r.id);
+    }
+  }catch(err){ toast(err.message, 8000); }
+});
+
+/* ---------- kits ---------- */
+let KITS = [];
+async function loadKits(){
+  try{ KITS = (await api("/api/kits")).kits; }catch(e){ return; }
+  const mgr = !!(S.st && S.st.access.canManage);
+  $("#kitNew").hidden = !mgr;
+  $("#kitTable tbody").innerHTML = KITS.map(k => `<tr><td><div class="item-name">${esc(k.label)}</div><div class="item-sub mono">${esc(k.sku || "")}</div></td>
+      <td class="small">${k.parts.map(p => `${p.qty} × ${esc(p.name)}${p.attrs ? " (" + esc(p.attrs) + ")" : ""} <span class="muted">(${fmtNum(p.stock)})</span>`).join("<br>")}</td>
+      <td class="num"><b>${k.available ?? "–"}</b>${k.stock !== k.available ? `<div class="item-sub">WooCommerce: ${fmtNum(k.stock)}, updating</div>` : ""}</td>
+      <td class="num">${mgr ? `<button class="btn sm" data-kitedit="${k.item_id}">Edit</button>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="empty">No kits yet.${mgr ? " Make one for each combo or pack you sell." : ""}</td></tr>`;
+}
+async function editKit(k){
+  const pick = (id, label) => `<div class="results" id="${id}" hidden></div>`;
+  let kitId = k ? k.item_id : null, parts = k ? k.parts.map(p => ({id: p.part_id, qty: p.qty})) : [];
+  const draw = el => {
+    el.querySelector("#kitWhich").innerHTML = kitId ? itemCell(S.items.get(kitId) || {name: "Item " + kitId, attrs: "", sku: "", gtin: ""}) : `<span class="muted">Search for the kit product above</span>`;
+    el.querySelector("#kitParts").innerHTML = parts.map((p, i) => { const it = S.items.get(p.id) || {name: "Item " + p.id, attrs: "", sku: "", gtin: ""};
+      return `<tr data-kp="${i}"><td>${itemCell(it)}</td><td class="num"><input type="number" class="qty" min="1" value="${p.qty}" data-kq></td><td class="num"><button type="button" class="btn sm" data-kx>✕</button></td></tr>`; }).join("")
+      || `<tr><td colspan="3" class="empty">Add the parts it's made of.</td></tr>`;
+  };
+  const back = await modal({title: k ? `Kit: ${k.label}` : "Make a kit", ok: "Save the kit",
+    html: `<p class="small muted" style="margin-top:0">The kit is a product of its own in WooCommerce (or a variation, for a pack like "case of 10"). Its stock will be set to how many its parts can make.</p>
+      ${k ? "" : `<input id="kitQ" type="search" data-keep-enter style="width:100%" placeholder="The kit product: scan or search" autocomplete="off">${pick("kitRes")}`}
+      <div id="kitWhich" style="margin:8px 0"></div>
+      <h3>Made of</h3><input id="partQ" type="search" data-keep-enter style="width:100%" placeholder="Add a part: scan or search" autocomplete="off">${pick("partRes")}
+      <div class="tablewrap"><table><tbody id="kitParts"></tbody></table></div>
+      ${k ? `<p><button type="button" class="btn sm danger" data-v="2">Stop treating it as a kit</button></p>` : ""}`,
+    onOpen: el => {
+      draw(el);
+      const hook = (qid, rid, onPick) => { const qEl = el.querySelector("#" + qid), res = el.querySelector("#" + rid);
+        if (!qEl) return;
+        const show = () => { const v = qEl.value.trim(); const ids = matchCode(v); const found = (ids.length ? ids.map(i => S.items.get(i)) : searchItems(v, 12, ["shop"])).filter(x => x && x.scope === "shop");
+          res.hidden = !v; res.innerHTML = found.map(it => `<button type="button" data-pick="${it.id}">${itemCell(it)}</button>`).join("") || `<div class="empty" style="padding:8px">No in-shop product matches.</div>`; };
+        qEl.addEventListener("input", show);
+        qEl.addEventListener("keydown", ev => { if (ev.key === "Enter"){ ev.preventDefault(); ev.stopPropagation(); const b = res.querySelector("[data-pick]"); if (b) b.click(); } }, true);
+        res.addEventListener("click", ev => { const b = ev.target.closest("[data-pick]"); if (b){ onPick(+b.dataset.pick); qEl.value = ""; res.hidden = true; draw(el); } }); };
+      hook("kitQ", "kitRes", id => { kitId = id; });
+      hook("partQ", "partRes", id => { const p = parts.find(x => x.id === id); if (p) p.qty++; else parts.push({id, qty: 1}); });
+      el.addEventListener("input", ev => { const tr = ev.target.closest("tr[data-kp]"); if (tr && ev.target.matches("[data-kq]")) parts[+tr.dataset.kp].qty = Math.max(1, +ev.target.value || 1); });
+      el.addEventListener("click", ev => { const x = ev.target.closest("[data-kx]"); if (x){ parts.splice(+x.closest("tr").dataset.kp, 1); draw(el); } });
+    }});
+  if (!back) return;
+  try{
+    if (back.dataset.choice === "2"){ await api("/api/kits/remove", {item_id: kitId}); toast("It's a plain product again"); }
+    else {
+      if (!kitId) return toast("Pick the kit product");
+      const r = await api("/api/kits", {item_id: kitId, parts: parts.map(p => ({part_id: p.id, qty: p.qty}))});
+      toast(`Saved: it can make ${r.kit.available}`);
+    }
+    await loadItems(); loadKits();
+  }catch(e){ toast(e.message, 8000); }
+}
+$("#kitNew").addEventListener("click", () => editKit(null));
+$("#kitTable").addEventListener("click", e => { const b = e.target.closest("[data-kitedit]"); if (b) editKit(KITS.find(k => k.item_id === +b.dataset.kitedit)); });
 
 /* ---------- reports: the shop password only ---------- */
 const R = {rep: "inventory", days: 90, from: "", to: "", months: 12, threshold: 20, more: {}};
@@ -3109,6 +3606,7 @@ function smallBlock(it, o, size, width){
     if (it.attrs) for (const l of wrapAll(it.attrs, "R", size * 0.92, width)) out.push([l, "R", size * 0.92]);
   }
   if (o.upc && it.gtin) out.push(["UPC " + it.gtin, "R", size * 0.92]);
+  if (o.bin && it.bins && it.bins.length) out.push(["Bin " + it.bins[0], "R", size * 0.92]);
   return [out, out.reduce((a, l) => a + l[2] * 1.18 * MM_PER_PT, 0)];
 }
 function fitLabelText(it, o, width, avail, f){
@@ -3215,6 +3713,8 @@ function cardsPdf(cards){
   const op = store.get("op", null);
   if (op && S.st && S.st.people.find(p => p.code === op.code) && Date.now() - (op.at || 0) < 10 * 60 * 1000){
     S.op = {code: op.code, name: op.name}; S.lastActivity = op.at;
+    const mg = store.get("mgr", null);
+    if (mg && mg.code === op.code && Date.now() - (mg.at || 0) < 10 * 60 * 1000){ S.mgr = {token: mg.token, name: mg.name, code: mg.code}; await loadState(true); }
   }
   loadLists();
   setMode(S.mode);
