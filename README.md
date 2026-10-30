@@ -84,13 +84,13 @@ One-time setup: `GITHUB.md`.
 
 Windows PowerShell:
 ```powershell
-scp $HOME\Downloads\wojtek-stock-v20.zip pepe@10.42.10.246:~/
+scp $HOME\Downloads\wojtek-stock-v21.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
 Mac Terminal:
 ```bash
-scp ~/Downloads/wojtek-stock-v20.zip pepe@10.42.10.246:~/
+scp ~/Downloads/wojtek-stock-v21.zip pepe@10.42.10.246:~/
 ssh pepe@10.42.10.246
 ```
 
@@ -425,6 +425,11 @@ that has a UPC but no SKU.
   narrower than the preview's, so its SKU lettering can come out slightly different.
 - **What the Zebra prints:** under the preview on the Labels tab, a second picture drawn from the printer's own
   instructions (the very commands it's sent), so it shows how the Zebra will lay the label out, with no printer needed.
+- **The printer's status:** before every print, Wojtek Stock asks the Zebra how it is, and turns the print away with the
+  reason if it's paused ("press its Pause button"), out of labels, its head is open, or it can't be reached at all (with
+  what to check: its power, a firewall rule between networks, its gateway setting). The Labels tab shows it next to the
+  print buttons. If it stays paused or out of labels for 15 minutes, an alert email goes out; if it can't be reached (often
+  just switched off), the morning email says so.
 - **Print a test label** (beside Print on the Zebra) sends a label of the chosen size with its edges drawn, a QR code
   and the time: the first thing to try after changing anything.
 - **When a label doesn't print** (lessons from setting up the Locator's Zebra, the same printer):
@@ -492,6 +497,32 @@ cd ~/wojtek-stock && sudo docker compose exec stock python3 -c "import sqlite3; 
 ```
 A Proxmox backup of the VM covers it too.
 
+## Restoring from a backup
+
+A backup only counts if it restores, so try this once now (the **test** steps change nothing), and keep this section for
+the day you need it. WooCommerce always has the real stock numbers; what a backup brings back is everything Wojtek Stock
+keeps itself: the change log, people and badges, terminals, labels, vendors, POs and receipts, vendor invoices and
+payments, returns, bins and counts, kits, reorder points, reports' history and snapshots.
+
+1. **Get the backup.** At dropbox.com: **Apps → your backup app → Wojtek Stock backups**, open the newest dated
+   folder, and download **stock-db.sqlite.gz**. Copy it to the server, from Windows PowerShell:
+   `scp $HOME\Downloads\stock-db.sqlite.gz pepe@10.42.10.246:~/` (Mac: `scp ~/Downloads/stock-db.sqlite.gz pepe@10.42.10.246:~/`).
+2. **Check it:** `~/wojtek-stock/restore.sh check ~/stock-db.sqlite.gz` says whether it's sound (a partial download, a
+   damaged file, or a database that isn't Wojtek Stock's is refused) and what's in it.
+3. **Look at it, safely:** `~/wojtek-stock/restore.sh test ~/stock-db.sqlite.gz` starts a **test copy** at
+   http://10.42.10.246:8092 (the shop password as usual). It reads your store but can't change WooCommerce or GunBroker,
+   send email, print or back up, and says TEST COPY across the top. Look through the Log, Purchasing, People. Then
+   `~/wojtek-stock/restore.sh test-stop` deletes it. Wojtek Stock itself is never touched by any of this.
+4. **Only if Wojtek Stock's own database is lost or damaged:** `~/wojtek-stock/restore.sh for-real ~/stock-db.sqlite.gz`.
+   It shows what's in the backup, asks you to type RESTORE, keeps the current database as
+   `data/stock.db.before-restore-<date>` (so it can be undone), restores, and starts Wojtek Stock again; its first sync
+   brings stock numbers up to date from WooCommerce. Anything done after that backup was taken (the night before) isn't
+   in it: the Log tab shows where it ends.
+
+Copies of vendor invoices are backed up separately (the **invoice-copies** folder next to the dated ones): after a real
+restore, download that folder and put its files in `~/wojtek-stock/data/bills/` (then
+`sudo chown -R 10001:10001 ~/wojtek-stock/data/bills`).
+
 ## Safeguards
 
 - **A password is required.** Without `STOCK_PASSWORD` in `stock.env`, Wojtek Stock refuses to start (the log says
@@ -529,7 +560,7 @@ A Proxmox backup of the VM covers it too.
 `./run-tests.sh` (in `~/wojtek-stock`) runs the server tests in a throwaway Python container: about 3 minutes, against
 a pretend WooCommerce store with a temporary database, never your settings, your data or your store. The last line says
 how many passed and names any that failed. `bash tests/test_deploy.sh` checks `deploy.sh` with a pretend GitHub, and
-`python3 tests/zpl_preview.py` draws what the Zebra will print, from the printer commands themselves (a check that no
+`bash tests/test_restore.sh` checks restore.sh (with a pretend Docker), and `python3 tests/zpl_preview.py` draws what the Zebra will print, from the printer commands themselves (a check that no
 text runs over is part of the tests), and `tests/test_ui.py` drives the page in a headless browser (it needs Playwright, so it's run before each version is
 handed over rather than on the server). The tests live in `tests/` and aren't built into the image.
 

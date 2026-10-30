@@ -4,6 +4,7 @@ against the mock store. Decodes the QR codes in the label and badge PDFs. Needs 
 Run from the project folder:  python3 tests/test_ui.py [screenshot-folder]
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,9 @@ def run_ui():
                              viewport={"width": 1280, "height": 900})
         page = ctx.new_page()
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        # a refusal the page handles and shows (a 4xx answer: a paused printer, a wrong PIN) isn't a page error;
+        # script errors and server errors (5xx) still are
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" and not re.search(r"status of 4\d\d", m.text) else None)
         page.add_init_script("""window.__beeps = []; window.AudioContext = class { constructor(){ this.state='running'; this.currentTime=0; this.destination={}; }
             resume(){ return Promise.resolve(); } createBuffer(){ return {}; } createBufferSource(){ return {connect(){}, start(){}}; }
             createOscillator(){ return {type:'', frequency:{value:0}, connect(g){ return g; }, start(){}, stop(){}}; }
@@ -506,6 +509,11 @@ def run_ui():
         page.select_option("#labSize", "3x2")
         page.wait_for_timeout(300)
         T.check("Zebra preview shown and loaded", T.wait_for(lambda: page.evaluate("document.querySelector('#labZebraImg').complete && document.querySelector('#labZebraImg').naturalWidth > 0") and page.is_visible("#labZebraPrev"), 10))
+        T.check("the Zebra's status on the Labels tab", T.wait_for(lambda: "Zebra ready" in page.inner_text("#prnStatus"), 10), page.inner_text("#prnStatus"))
+        T.PRINTER_STATE["pause"] = 1
+        page.click("#labTest")
+        T.check("a paused Zebra: turned away, and the status says so", T.wait_for(lambda: "paused" in page.inner_text("#prnStatus"), 10) and "Pause button" in page.inner_text("#toast"), page.inner_text("#prnStatus"))
+        T.PRINTER_STATE["pause"] = 0
         n_t = len(T.printed)
         page.click("#labTest")
         T.check("Print a test label from the page", T.wait_for(lambda: len(T.printed) > n_t and "TEST-LABEL" in T.printed[-1], 10))

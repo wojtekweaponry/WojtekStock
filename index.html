@@ -376,6 +376,7 @@ tr.flashrow td{animation:rowflash 1.2s ease-out}
         <span class="grow"></span>
         <span id="labCount" class="muted small"></span>
         <button class="btn" id="labPdf">Download PDF</button>
+        <span id="prnStatus" class="small" hidden></span>
         <button class="btn" id="labTest" hidden>Print a test label</button>
         <button class="btn primary" id="labZebra" hidden>Print on the Zebra</button>
       </div>
@@ -793,6 +794,7 @@ function renderChrome(){
   if (st.woo.ready && !st.setup.confirmed) b.push(`<div class="banner warn"><b>Changes are locked until Setup is confirmed.</b> Scanning and lookups work; tick your distributor feed prefixes on the <a href="#" data-goto="setup">Setup</a> tab to unlock changes.</div>`);
   if (st.woo.write === "dryrun") b.push(`<div class="banner info"><b>Dry run.</b> Every change is checked against the live store and logged, but nothing is sent to WooCommerce. When the log looks right, set WOO_WRITE=on in stock.env and restart.</div>`);
   if (st.woo.write === "off") b.push(`<div class="banner warn"><b>Writes are off</b> (WOO_WRITE=off): changes are refused.</div>`);
+  if (st.testCopy) b.push(`<div class="banner err"><b>TEST COPY, restored from a backup.</b> It reads your store but can't change WooCommerce or GunBroker, send email, print, or back up. When you're done: <span class="mono">./restore.sh test-stop</span></div>`);
   if (st.fullCount) b.push(`<div class="banner info"><b>Full count going</b> since ${esc(when(st.fullCount.since))}. Count bin by bin in Count mode; finish it on the <a href="#" data-goto="products">Products</a> tab.</div>`);
   if (st.payables && st.payables.overdue > 0) b.push(`<div class="banner warn"><b>Overdue vendor invoices: $${(+st.payables.overdue).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}.</b> See <a href="#" data-goto="purchasing">Purchasing</a>.</div>`);
   if (st.gb && st.gb.attention) b.push(`<div class="banner warn"><b>GunBroker needs a look:</b> ${st.gb.attention} listing${st.gb.attention === 1 ? "" : "s"} or sale${st.gb.attention === 1 ? "" : "s"} flagged. See the <a href="#" data-goto="gunbroker">GunBroker</a> tab.</div>`);
@@ -891,6 +893,7 @@ function showTab(name){
   for (const t of ["station", "products", "purchasing", "gunbroker", "reports", "labels", "log", "people", "setup"]) $("#tab-" + t).hidden = t !== name;
   if (name === "reports") loadReport();
   if (name === "gunbroker") loadGb();
+  if (name === "labels") printerStatus();
   if (name === "purchasing") loadPurchasing();
   if (name === "products"){ renderProducts(); loadBins(); loadKits(); setTimeout(() => $("#prodQ").focus(), 0); }
   if (name === "station") focusScan();
@@ -1861,12 +1864,24 @@ $("#labPdf").addEventListener("click", async () => {
   downloadPdf(`labels-${new Date().toISOString().slice(0, 10)}.pdf`, labelsPdf(all, sz, skip, labelOpts()));
   try{ await api("/api/labels/record", {lines}); loadItems(); }catch(e){}
 });
+async function printerStatus(){
+  const el = $("#prnStatus");
+  el.hidden = !S.st?.label.printer;
+  if (el.hidden) return;
+  el.innerHTML = `<span class="muted">Asking the Zebra…</span>`;
+  try{
+    const p = await api("/api/printer");
+    el.innerHTML = p.state === "ok" ? `<span class="tag ok">Zebra ready</span>` : `<span class="tag ${p.state === "unreachable" ? "err" : "dup"}" title="${esc(p.msg)}">Zebra: ${esc({unreachable: "can't be reached", paused: "paused", paper: "out of labels", head: "head open", ribbon: "out of ribbon"}[p.state] || p.state)}</span> <span class="small">${esc(p.msg)}</span>`;
+  }catch(e){ el.textContent = ""; }
+}
+setInterval(() => { if (S.tab === "labels" && !document.hidden) printerStatus(); }, 30000);
 $("#labTest").addEventListener("click", async () => {
   const sz = labelSizes().find(s => s.id === $("#labSize").value);
   try{
     const r = await api("/api/labels/test", {size: {w: sz.w / MM, h: sz.h / MM, sideways: !!sz.sideways}});
-    toast(`Test label sent to ${r.printer}. Nothing came out? The printer may be paused (check its light), out of labels, or its head open.`, 9000);
+    toast(`Test label sent to ${r.printer}.`, 6000);
   }catch(e){ toast(e.message, 9000); }
+  printerStatus();
 });
 $("#labZebra").addEventListener("click", async () => {
   const lines = labelLines();

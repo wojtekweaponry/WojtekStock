@@ -24,6 +24,7 @@ DB = os.path.join(TMP, "stock.db")
 PASSED, FAILED = [], []
 procs = {}
 printed = []
+PRINTER_STATE = {"paper": 0, "pause": 0, "head": 0}   # what the pretend Zebra says when asked (~HS)
 mails = []                      # what the pretend mail server received: {"from", "to", "data"}
 SMTP_AUTH = {"user": "wojtek", "token": "tok-123"}
 
@@ -152,9 +153,15 @@ def printer():
                 if not chunk:
                     break
                 data += chunk
+                if data == b"~HS":   # a status question: answer it like a Zebra (three framed strings)
+                    p = PRINTER_STATE
+                    c.sendall(f"\x02030,{p['paper']},{p['pause']},1245,000,0,0,0,000,0,0,0\x03\r\n"
+                              f"\x02000,0,{p['head']},0,0,2,6,0,00000000,1,000\x03\r\n\x021234,0\x03\r\n".encode())
+                    break
         except socket.timeout:
             pass
-        printed.append(data.decode())
+        if data != b"~HS":
+            printed.append(data.decode())
         c.close()
 
 
@@ -1286,6 +1293,46 @@ def run():
     check("the kits list", kl and kl[0]["item_id"] == 2119 and kl[0]["available"] == 5, kl)
     code, r, _ = api("POST", "/api/kits/remove", {"item_id": 2119})
     check("a kit can go back to being a plain product", code == 200 and items()[2119][15] is False)
+
+    print("17m. The printer's status, and a test copy from a backup")
+    st = api("GET", "/api/printer")[1]
+    check("the printer answers: ready", st["state"] == "ok", st)
+    PRINTER_STATE["pause"] = 1
+    n0 = len(printed)
+    code, r, _ = api("POST", "/api/labels/print", {"lines": [{"id": 2001, "copies": 1}], "size": {"w": 2, "h": 1}})
+    check("a paused printer: the print is turned away, saying why", code == 409 and "paused" in r["error"] and "Pause button" in r["error"], (code, r))
+    time.sleep(0.5)
+    check("and nothing was sent", len(printed) == n0)
+    PRINTER_STATE.update(pause=0, head=1)
+    code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 2, "h": 1}})
+    check("head open: says so", code == 409 and "head is open" in r["error"], (code, r))
+    PRINTER_STATE.update(head=0, paper=1)
+    check("out of labels: the status says so", "out of labels" in api("GET", "/api/printer")[1]["msg"])
+    PRINTER_STATE.update(paper=0)
+    code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 2, "h": 1}})
+    check("ready again: it prints", code == 200)
+    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+    old_ = (_dt2.now(_tz2.utc) - _td2(minutes=20)).isoformat(timespec="seconds")
+    su.meta_set("printer_state", {"state": "paused", "msg": "It's paused", "since": old_})
+    check("paused for 15 minutes: an alert", any(k == "printer" for k, _ in su.attention_items(for_alert=True)))
+    su.meta_set("printer_state", {"state": "unreachable", "msg": "x", "since": (_dt2.now(_tz2.utc) - _td2(minutes=40)).isoformat(timespec="seconds")})
+    check("unreachable (switched off?): the morning email only, no alert", any(k == "printer-off" for k, _ in su.attention_items())
+          and not any(k.startswith("printer") for k, _ in su.attention_items(for_alert=True)))
+    start_server("on", {"LABEL_PRINTER": "127.0.0.1:9"})
+    st = api("GET", "/api/printer")[1]
+    code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 2, "h": 1}})
+    check("an unreachable printer: plain words, and what to check", st["state"] == "unreachable" and code == 502 and "gateway" in r["error"], (st, code, r))
+    start_server("on", {"STOCK_SAFE_COPY": "on"})
+    s_ = state()
+    check("a test copy says it's one, and writes nothing", s_["testCopy"] is True and s_["woo"]["write"] == "dryrun", (s_.get("testCopy"), s_.get("woo")))
+    code, r, _ = api("POST", "/api/email/test", {"to": "x@y.example"})
+    check("a test copy sends no email", code == 409 and "test copy" in r["error"], (code, r))
+    code, r, _ = api("POST", "/api/labels/test", {"size": {"w": 2, "h": 1}})
+    check("or prints", code == 400)
+    code, r, _ = api("POST", "/api/backup/run", {})
+    check("or backs up", code != 200, (code, r))
+    check("but shows everything", len(items()) > 20 and api("GET", "/api/rmas?status=")[1]["rmas"])
+    start_server("on")
 
     print("18. Restart keeps everything")
     start_server("on")

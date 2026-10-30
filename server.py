@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "v20"
+VERSION = "v21"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -103,7 +103,10 @@ CFG = {
     "morning_time": env("MORNING_EMAIL_TIME", "07:00") or "07:00",   # "off" for none
     "alert_to": env("ALERT_EMAIL_TO"),
     "alerts_on": env("ALERT_EMAILS", "on").lower() not in ("off", "0", "no", "false"),
+    "safe_copy": env_on("STOCK_SAFE_COPY"),   # a test copy restored from a backup (restore.sh test): changes nothing
 }
+if CFG["safe_copy"]:   # read the store, show everything, but write, send and print nothing
+    CFG.update(woo_write="dryrun", gb_sync="off", label_printer="", alerts_on=False, morning_time="off", auto_po_time="off")
 if CFG["woo_write"] not in ("off", "dryrun", "on"):
     CFG["woo_write"] = "dryrun"
 WOO_API = CFG["woo_url"] + "/wp-json/wc/v3"
@@ -3253,9 +3256,29 @@ def alert_to():
     return CFG["alert_to"] or morning_to()
 
 
-def attention_items():
-    """What needs a person, right now: (key, one line). The same list the morning email and the alerts use."""
+def watch_printer():
+    """Every few minutes: how's the Zebra? Remembered with since when, for alerts and the morning email."""
+    if not printer_addr():
+        return
+    last = meta_get("printer_state", {}) or {}
+    if last.get("checked") and time.time() - last["checked"] < 300:
+        return
+    st = printer_status()
+    since = last.get("since") if last.get("state") == st["state"] else now_iso()
+    meta_set("printer_state", {"state": st["state"], "msg": st["msg"], "since": since, "checked": time.time()})
+
+
+def attention_items(for_alert=False):
+    """What needs a person, right now: (key, one line). The same list the morning email and the alerts use; an
+    unreachable printer (often just switched off) is only in the morning email, never an alert."""
     out = []
+    ps = meta_get("printer_state", {}) or {}
+    since = parse_iso(ps.get("since"))
+    mins = (datetime.now(timezone.utc) - since).total_seconds() / 60 if since else 0
+    if ps.get("state") in ("paused", "paper", "head", "ribbon") and mins >= 15:
+        out.append(("printer", f"Label printer: {ps['msg']} (for {int(mins)} minutes)"))
+    elif ps.get("state") == "unreachable" and mins >= 30 and not for_alert:
+        out.append(("printer-off", "Label printer: can't be reached (switched off, or a network change?)"))
     sy = meta_get("sync", {}) or {}
     last_ok = parse_iso(sy.get("last_ok"))
     if sy.get("error") and (not last_ok or (datetime.now(timezone.utc) - last_ok).total_seconds() > 1800):
@@ -3380,7 +3403,7 @@ def check_alerts():
     """Email when something breaks (once, not every minute), and again when it's back to normal."""
     if not CFG["alerts_on"] or not email_ready() or not alert_to():
         return
-    now = {k: t for k, t in attention_items() if k not in ("double-restock", "gb-attention")}   # those wait for the morning
+    now = {k: t for k, t in attention_items(for_alert=True) if k not in ("double-restock", "gb-attention")}   # those wait for the morning
     active = meta_get("alerts_active", {}) or {}
     new = {k: t for k, t in now.items() if k not in active}
     cleared = [k for k in active if k not in now]
@@ -3405,6 +3428,7 @@ def notify_loop():
     while True:
         try:
             if setup_confirmed():
+                watch_printer()
                 check_alerts()
                 mt = CFG["morning_time"]
                 now = datetime.now(LOCAL_TZ)
@@ -4261,6 +4285,8 @@ def send_email(to, subject, text, attachments=(), cc=None):
     import ssl
     from email.message import EmailMessage
     from email.utils import formataddr, make_msgid
+    if CFG["safe_copy"]:
+        raise ApiError(409, "This is a test copy restored from a backup: it doesn't send email")
     if not email_ready():
         raise ApiError(400, "Email isn't set up: fill in SMTP_HOST, SMTP_USER, SMTP_TOKEN and SMTP_FROM in stock.env")
     msg = EmailMessage()
@@ -4346,6 +4372,8 @@ def purchasing_loop():
         time.sleep(every)
         try:
             now = datetime.now(LOCAL_TZ)
+            if CFG["auto_po_time"] == "off":
+                continue
             h, _, m = CFG["auto_po_time"].partition(":")
             if (now.hour, now.minute) < (int(h or 15), int(m or 0)) or meta_get("auto_po_day") == now.strftime("%Y-%m-%d"):
                 continue
@@ -4972,10 +5000,59 @@ def printer_addr():
     return a, 9100
 
 
+def printer_status(timeout=3.0):
+    """Ask the Zebra how it is (~HS, its host status): reachable, paused, out of labels, head open, ribbon out.
+    A printer that's reachable but doesn't answer the question is treated as fine (status unknown)."""
+    addr = printer_addr()
+    if not addr:
+        return {"state": "none", "msg": "No label printer is set up (LABEL_PRINTER in stock.env)"}
+    out = {"state": "ok", "msg": "Ready", "addr": f"{addr[0]}:{addr[1]}", "at": now_iso()}
+    try:
+        with socket.create_connection(addr, timeout=timeout) as sk:
+            sk.sendall(b"~HS")
+            sk.settimeout(timeout)
+            data = b""
+            try:
+                while data.count(b"\x03") < 3:
+                    chunk = sk.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+            except socket.timeout:
+                pass
+    except OSError as e:
+        return dict(out, state="unreachable", msg=f"Can't reach the label printer at {addr[0]}:{addr[1]} ({getattr(e, 'strerror', None) or e}). "
+                                                  "Check that it's on, and that this server can reach its network (a firewall rule between "
+                                                  "networks, or the printer's gateway setting).")
+    parts = [p.decode("ascii", "replace").strip() for p in re.findall(rb"\x02([^\x03]*)\x03", data)]
+    if len(parts) < 2:
+        return dict(out, state="ok", msg="Reachable (it didn't report its status)", unknown=True)
+    a, b_ = parts[0].split(","), parts[1].split(",")
+    flag = lambda lst, i: len(lst) > i and lst[i].strip() == "1"
+    problems = []
+    if flag(b_, 2):
+        problems.append(("head", "Its print head is open: close it"))
+    if flag(a, 1):
+        problems.append(("paper", "It's out of labels (or the labels aren't seated): load labels"))
+    if flag(b_, 3) and flag(b_, 4):
+        problems.append(("ribbon", "It's out of ribbon"))
+    if flag(a, 2):
+        problems.append(("paused", "It's paused: press its Pause button"))
+    if problems:
+        return dict(out, state=problems[0][0], msg="The Zebra isn't ready. " + "; ".join(m for _, m in problems) + ".")
+    return out
+
+
 def send_to_printer(zpl):
     addr = printer_addr()
     if not addr:
         raise ApiError(400, "No label printer is set up: put its network address in stock.env (LABEL_PRINTER)")
+    st = printer_status()
+    meta_set("printer_state", {"state": st["state"], "msg": st["msg"], "since": now_iso() if st["state"] != ((meta_get("printer_state", {}) or {}).get("state")) else (meta_get("printer_state", {}) or {}).get("since", now_iso())})
+    if st["state"] == "unreachable":
+        raise ApiError(502, st["msg"])
+    if st["state"] not in ("ok", "none"):
+        raise ApiError(409, st["msg"] + " Then print again.")
     try:
         with socket.create_connection(addr, timeout=6) as s:
             s.sendall(zpl.encode("utf-8"))
@@ -5482,6 +5559,8 @@ def db_snapshot():
 
 
 def run_backup(reason="scheduled"):
+    if CFG["safe_copy"]:
+        raise ApiError(409, "This is a test copy restored from a backup: it doesn't make backups")
     if not BACKUP_LOCK.acquire(blocking=False):
         raise ApiError(409, "A backup is already running")
     try:
@@ -5906,6 +5985,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/bills.csv":
                 return self.csv(f"wojtek-stock-vendor-invoices-{datetime.now(LOCAL_TZ):%Y-%m-%d}.csv", export_bills())
             return self.csv(f"wojtek-stock-payments-{datetime.now(LOCAL_TZ):%Y-%m-%d}.csv", export_payments())
+        if path == "/api/printer":
+            return self.send(200, printer_status())
         if path == "/api/labels/zebra-preview":
             return self.send(200, zebra_preview(qs), "image/svg+xml")
         if path == "/api/nosku":
@@ -5933,6 +6014,7 @@ class Handler(BaseHTTPRequestHandler):
             "openPos": q1("SELECT COUNT(*) n FROM pos WHERE status IN ('sent','partial')")["n"],
             "email": {"ready": email_ready(), "from": CFG["smtp_from"], "host": CFG["smtp_host"], "cc": CFG["po_cc"]},
             "autoPoTime": CFG["auto_po_time"],
+            "testCopy": CFG["safe_copy"],
             "gb": {"ready": gb_ready(), "mode": CFG["gb_sync"], "error": (meta_get("gb", {}) or {}).get("error", ""),
                    "attention": q1("SELECT COUNT(*) n FROM gb_listings WHERE error!=''")["n"] +
                                 q1("SELECT COUNT(*) n FROM gb_orders WHERE status IN ('failed','cancelled after import')")["n"]},
